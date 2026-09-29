@@ -1,0 +1,34 @@
+{
+  "currency": "PKR",
+  "rules": [
+    "Only one promo code can be used per order.",
+    "A discount applies to the food subtotal only. The delivery fee is never discounted.",
+    "Only the codes listed here are valid. An unknown code must never be accepted."
+  ],
+  "promotions": [
+    {
+      "id": "FAMILY10",
+      "name": "Family 10% off",
+      "rule": "10% off the food subtotal, up to a maximum discount of 200 PKR.",
+      "discount": { "type": "percent", "value": 10, "maxAmount": 200, "appliesTo": "foodSubtotal" },
+      "eligibility": { "minFoodSubtotal": 1500, "orderTypes": ["pickup", "delivery"] },
+      "active": true
+    },
+    {
+      "id": "PICKUP50",
+      "name": "Pickup 50 PKR off",
+      "rule": "50 PKR off the food subtotal for pickup orders only.",
+      "discount": { "type": "fixed", "value": 50, "appliesTo": "foodSubtotal" },
+      "eligibility": { "minFoodSubtotal": 700, "orderTypes": ["pickup"] },
+      "active": true
+    },
+    {
+      "id": "OLD20",
+      "name": "Old promotion",
+      "rule": "This code is inactive and cannot be used.",
+      "discount": null,
+      "eligibility": null,
+      "active": false
+    }
+  ]
+}
