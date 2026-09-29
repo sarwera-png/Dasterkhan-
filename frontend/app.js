@@ -1,6 +1,8 @@
-// Practice mock chat widget: no API, no network calls, no storage.
+// Chat widget: talks to POST /api/chat. History lives in memory only (no storage, no cookies).
 (function () {
-  var REPLY = "Hi! I'm Dastarkhwan Assistant. My AI brain isn't connected yet.";
+  var GENERIC_ERROR = 'Sorry, something went wrong. Please try again or contact staff.';
+  var MAX_HISTORY = 10;
+  var TIMEOUT_MS = 90000; // the server may try several models, up to 20s each
 
   var toggle = document.getElementById('chat-toggle');
   var win = document.getElementById('chat-window');
@@ -8,24 +10,68 @@
   var messages = document.getElementById('chat-messages');
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
+  var sendBtn = form.querySelector('.chat-send');
+
+  var history = []; // [{ role: 'user' | 'assistant', content: '...' }]
+  var busy = false;
 
   function setOpen(open) {
     win.classList.toggle('open', open);
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
-      input.focus();
+      if (!busy) input.focus();
     } else {
       toggle.focus();
     }
   }
 
-  function addMessage(text, who) {
+  function addMessage(text, who, extraClass) {
     var bubble = document.createElement('div');
-    bubble.className = 'chat-msg chat-msg-' + who;
+    bubble.className = 'chat-msg chat-msg-' + who + (extraClass ? ' ' + extraClass : '');
     bubble.setAttribute('dir', 'auto');
-    bubble.textContent = text;
+    bubble.textContent = text; // plain text only, never innerHTML
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
+    return bubble;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    input.disabled = value;
+    sendBtn.disabled = value;
+  }
+
+  // Returns { ok, reply }. Never throws and never exposes raw error details.
+  function askServer(message) {
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, TIMEOUT_MS);
+
+    return fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message, conversationHistory: history.slice(-MAX_HISTORY) }),
+      signal: controller.signal
+    })
+      .then(function (res) {
+        return res.json().then(
+          function (data) { return { res: res, data: data }; },
+          function () { return { res: res, data: null }; }
+        );
+      })
+      .then(function (result) {
+        var data = result.data;
+        if (data && typeof data.reply === 'string' && data.reply.trim() !== '') {
+          return { ok: result.res.ok, reply: data.reply };
+        }
+        return { ok: false, reply: GENERIC_ERROR };
+      })
+      .catch(function () {
+        return { ok: false, reply: GENERIC_ERROR };
+      })
+      .then(function (outcome) {
+        clearTimeout(timer);
+        return outcome;
+      });
   }
 
   toggle.addEventListener('click', function () {
@@ -38,12 +84,30 @@
 
   form.addEventListener('submit', function (event) {
     event.preventDefault();
+    if (busy) {
+      return;
+    }
     var text = input.value.trim();
     if (!text) {
       return;
     }
+
     addMessage(text, 'user');
     input.value = '';
-    addMessage(REPLY, 'bot');
+    setBusy(true);
+    var typing = addMessage('typing...', 'bot', 'chat-typing');
+
+    askServer(text).then(function (outcome) {
+      typing.remove();
+      addMessage(outcome.reply, 'bot');
+      if (outcome.ok) {
+        history.push({ role: 'user', content: text });
+        history.push({ role: 'assistant', content: outcome.reply });
+      }
+      setBusy(false);
+      if (win.classList.contains('open')) {
+        input.focus();
+      }
+    });
   });
 })();
