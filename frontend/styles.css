@@ -9,7 +9,7 @@
   --muted: #5c5c5c;
   --radius: 10px;
   --font-en: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-ur: "Noto Naskh Arabic", "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Segoe UI", Tahoma, "Arial Unicode MS", serif;
+  --font-ur: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Segoe UI", Tahoma, "Arial Unicode MS", serif;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -42,7 +42,7 @@ body {
 .ur,
 [lang="ur"] {
   font-family: var(--font-ur);
-  line-height: 1.9;
+  line-height: 2.2;
 }
 .ur-h { font-size: 1.25rem; color: var(--muted); margin: 0 0 1rem; }
 .ur-name { margin: 0 0 0.5rem; color: var(--muted); }
@@ -93,7 +93,7 @@ body {
   font-size: 0.9rem;
   line-height: 1.3;
 }
-.nav a .ur { font-size: 0.85rem; color: var(--gold-soft); line-height: 1.5; }
+.nav a .ur { font-size: 0.85rem; color: var(--gold-soft); line-height: 2.2; }
 .nav a:hover, .nav a:focus-visible { color: var(--gold); }
 
 a:focus-visible {
@@ -135,7 +135,7 @@ a:focus-visible {
   line-height: 1.4;
   transition: background 0.2s;
 }
-.btn .ur { font-weight: 400; line-height: 1.6; }
+.btn .ur { font-weight: 400; line-height: 2.2; }
 .btn:hover, .btn:focus-visible { background: var(--gold-soft); }
 
 /* Sections */
