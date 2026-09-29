@@ -1,0 +1,99 @@
+{
+  "currency": "PKR",
+  "items": [
+    {
+      "id": "BRY01",
+      "name": "Chicken Biryani",
+      "description": "A chicken and rice dish.",
+      "price": 350,
+      "requiredOptions": [
+        { "name": "spice", "choices": ["mild", "regular"] }
+      ],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "PUL01",
+      "name": "Beef Pulao",
+      "description": "A beef and rice dish.",
+      "price": 450,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "DAL01",
+      "name": "Daal Chawal",
+      "description": "Daal served with rice.",
+      "price": 250,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "ROL01",
+      "name": "Chicken Roll",
+      "description": "A chicken roll.",
+      "price": 220,
+      "requiredOptions": [
+        { "name": "chutney", "choices": ["with", "without"] }
+      ],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "RAI01",
+      "name": "Raita",
+      "description": "A side dish.",
+      "price": 80,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "SAL01",
+      "name": "Salad",
+      "description": "A side salad.",
+      "price": 100,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "WAT01",
+      "name": "Water 500 ml",
+      "description": "Water.",
+      "price": 60,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "KHR01",
+      "name": "Kheer cup",
+      "description": "A sweet dish served in a cup.",
+      "price": 150,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "NAN01",
+      "name": "Naan",
+      "description": "A bread.",
+      "price": 40,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    },
+    {
+      "id": "TEA01",
+      "name": "Tea",
+      "description": "A drink.",
+      "price": 100,
+      "requiredOptions": [],
+      "allergens": "unknown",
+      "available": true
+    }
+  ]
+}
