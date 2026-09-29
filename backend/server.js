@@ -8,10 +8,26 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const MODEL = 'gemini-3.8-flash';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const DEFAULT_FALLBACK_MODELS = 'gemini-3.7-flash,gemini-flash-latest';
 const SYSTEM_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'system-prompt.md');
 const MAX_HISTORY_ITEMS = 10;
+const REQUEST_TIMEOUT_MS = 20000;
 const FALLBACK_REPLY = 'Please try again or contact staff.';
+const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
+
+// Ordered model chain: primary first, then fallbacks. Entries are trimmed; empty ones and duplicates are skipped.
+function buildModelChain() {
+  const primary = process.env.GEMINI_MODEL || DEFAULT_MODEL;
+  const fallbacks = process.env.GEMINI_FALLBACK_MODELS || DEFAULT_FALLBACK_MODELS;
+  const chain = [];
+  for (const name of [primary, ...fallbacks.split(',')]) {
+    const model = name.trim();
+    if (model && !chain.includes(model)) chain.push(model);
+  }
+  return chain;
+}
+const MODEL_CHAIN = buildModelChain();
 
 // The key is read only from the environment and is never logged or returned.
 const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null;
@@ -35,6 +51,42 @@ function buildContents(conversationHistory, message) {
   contents.push({ role: 'user', parts: [{ text: message.trim() }] });
   return contents;
 }
+
+const TIMEOUT = Symbol('timeout');
+
+// One attempt on one model, limited to REQUEST_TIMEOUT_MS.
+// Returns { reply } on success, or { failure: <HTTP status number | 'timeout' | 'error'> }.
+async function attemptModel(model, contents, systemInstruction) {
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(TIMEOUT);
+    }, REQUEST_TIMEOUT_MS);
+  });
+  try {
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model,
+        contents,
+        config: { systemInstruction, abortSignal: controller.signal }
+      }),
+      timeout
+    ]);
+    const reply = typeof response.text === 'string' ? response.text.trim() : '';
+    return reply ? { reply } : { failure: 'error' };
+  } catch (err) {
+    if (err === TIMEOUT) return { failure: 'timeout' };
+    const status = Number(err && err.status);
+    return { failure: Number.isInteger(status) && status > 0 ? status : 'error' };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Statuses that mean the request or key is wrong: trying another model will not help.
+const STOP_STATUSES = new Set([400, 401, 403]);
 
 app.post('/api/chat', async (req, res) => {
   const { message, conversationHistory } = req.body || {};
@@ -62,27 +114,46 @@ app.post('/api/chat', async (req, res) => {
     });
   }
 
+  let systemInstruction;
   try {
-    const systemInstruction = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
-    const response = await ai.models.generateContent({
-      model: MODEL,
-      contents: buildContents(conversationHistory || [], message),
-      config: { systemInstruction }
-    });
-
-    const reply = typeof response.text === 'string' ? response.text.trim() : '';
-    if (!reply) {
-      throw new Error('empty response');
-    }
-    return res.json({ reply });
+    systemInstruction = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
   } catch (err) {
-    // Do not log or return the raw error: it could contain provider details.
-    console.error('Chat request failed');
-    return res.status(502).json({
-      error: 'The assistant could not answer right now.',
+    console.error('Chat unavailable: system prompt could not be read');
+    return res.status(503).json({
+      error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY
     });
   }
+
+  const contents = buildContents(conversationHistory || [], message);
+
+  // One attempt per model, in order. Each model has its own quota, so never retry the same model.
+  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    const model = MODEL_CHAIN[i];
+    const result = await attemptModel(model, contents, systemInstruction);
+
+    if (result.reply) {
+      console.log(`Gemini attempt ${i + 1}: model=${model} answered`);
+      return res.json({ reply: result.reply });
+    }
+
+    console.error(`Gemini attempt ${i + 1}: model=${model} status=${result.failure}`);
+
+    if (STOP_STATUSES.has(result.failure)) {
+      // Bad request or key problem: stop immediately, do not try more models.
+      return res.status(502).json({
+        error: 'The assistant could not answer right now.',
+        reply: FALLBACK_REPLY
+      });
+    }
+    // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
+  }
+
+  console.error('Gemini: all models failed');
+  return res.status(503).json({
+    error: 'The assistant is busy right now.',
+    reply: BUSY_REPLY
+  });
 });
 
 // Error handling: bad JSON gets a 400, anything else a generic 500 (nothing sensitive is logged or returned).
