@@ -11,6 +11,7 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_FALLBACK_MODELS = 'gemini-3.7-flash,gemini-flash-latest';
 const SYSTEM_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'system-prompt.md');
+const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
 const MAX_HISTORY_ITEMS = 10;
 const REQUEST_TIMEOUT_MS = 20000;
 const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
@@ -36,6 +37,29 @@ const ai = process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GE
 
 app.use(express.json({ limit: '100kb' }));
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
+
+// Menu grounding: data/menu.json is the single source of truth for items, prices, options and allergens.
+// It is read on every request, so edits to the file apply without a restart. Prices are shown as "<n> PKR".
+function buildMenuContext() {
+  const menu = JSON.parse(fs.readFileSync(MENU_PATH, 'utf8'));
+  if (!menu || !Array.isArray(menu.items) || menu.items.length === 0) {
+    throw new Error('invalid menu');
+  }
+  const currency = menu.currency || 'PKR';
+  const lines = menu.items.map((item) => {
+    const options = Array.isArray(item.requiredOptions) && item.requiredOptions.length
+      ? item.requiredOptions.map((o) => `${o.name} (choose one: ${o.choices.join(' or ')})`).join('; ')
+      : 'none';
+    return `- ${item.id} | ${item.name} | ${item.price} ${currency} | ${item.description} | required options: ${options} | allergens: ${item.allergens} | ${item.available ? 'available' : 'NOT available'}`;
+  });
+  return [
+    '## Menu data',
+    '',
+    'This is the complete menu. It is the only source for items, prices, required options, allergens and availability. Items not listed here do not exist, so never offer or promise anything that is not listed.',
+    '',
+    ...lines
+  ].join('\n');
+}
 
 // Turn the customer's conversationHistory into Gemini "contents". Nothing is invented:
 // only non-empty text from the provided items is used, most recent items only.
@@ -121,6 +145,16 @@ app.post('/api/chat', async (req, res) => {
     systemInstruction = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
   } catch (err) {
     console.error('Chat unavailable: system prompt could not be read');
+    return res.status(503).json({
+      error: 'The assistant is not configured on the server.',
+      reply: FALLBACK_REPLY
+    });
+  }
+
+  try {
+    systemInstruction += '\n\n' + buildMenuContext();
+  } catch (err) {
+    console.error('Chat unavailable: menu data could not be read');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY
