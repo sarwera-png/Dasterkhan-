@@ -41,7 +41,10 @@
 
   // Safety net for assistant replies only: drop bold markers (** and __) if the model uses them anyway.
   function stripMarkdownMarkers(text) {
-    return text.replace(/\*\*|__/g, '');
+    return text
+      .replace(/\*\*|__/g, '')
+      .replace(/\n[ \t]*(\n[ \t]*)+/g, '\n\n') // at most one blank line between lines
+      .trim();
   }
 
   function setBusy(value) {
