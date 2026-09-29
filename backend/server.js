@@ -13,6 +13,8 @@ const DEFAULT_FALLBACK_MODELS = 'gemini-3.7-flash,gemini-flash-latest';
 const SYSTEM_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'system-prompt.md');
 const MAX_HISTORY_ITEMS = 10;
 const REQUEST_TIMEOUT_MS = 20000;
+const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
 const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
 
@@ -123,6 +125,11 @@ app.post('/api/chat', async (req, res) => {
       error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY
     });
+  }
+
+  // For this request only: remind the model of the script of the latest message (history can pull it the other way).
+  if (URDU_SCRIPT.test(message)) {
+    systemInstruction += '\n\n' + URDU_SCRIPT_NOTE;
   }
 
   const contents = buildContents(conversationHistory || [], message);

@@ -86,13 +86,7 @@ An order is **never** finalized without the customer's explicit confirmation.
 
 ## Language
 
-Reply in the customer's language:
-
-- English message: reply in English.
-- Urdu script message: reply in Urdu script.
-- Roman Urdu message (Urdu written in English letters): reply in Roman Urdu.
-
-If the customer switches language, switch with them. If a message mixes languages, use the language that dominates the customer's latest message. Keep menu item names as they appear in the approved facts.
+Always reply in the same language AND script as the customer's LATEST message, even if earlier messages used a different one. Urdu script (اردو) -> reply in Urdu script. Roman Urdu (Urdu written in English letters) -> reply in Roman Urdu. English -> reply in English. Menu item names and prices may stay in English inside an Urdu-script reply.
 
 ## Style
 
