@@ -3,6 +3,7 @@
   var GENERIC_ERROR = 'Sorry, something went wrong. Please try again or contact staff.';
   var MAX_HISTORY = 10;
   var TIMEOUT_MS = 90000; // the server may try several models, up to 20s each
+  var URDU_SCRIPT = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
 
   var toggle = document.getElementById('chat-toggle');
   var win = document.getElementById('chat-window');
@@ -29,6 +30,9 @@
     var bubble = document.createElement('div');
     bubble.className = 'chat-msg chat-msg-' + who + (extraClass ? ' ' + extraClass : '');
     bubble.setAttribute('dir', 'auto');
+    if (URDU_SCRIPT.test(text)) {
+      bubble.setAttribute('lang', 'ur'); // picks up the Urdu font and line-height rules
+    }
     bubble.textContent = text; // plain text only, never innerHTML
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
