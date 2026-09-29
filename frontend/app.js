@@ -14,6 +14,7 @@
   var sendBtn = form.querySelector('.chat-send');
 
   var history = []; // [{ role: 'user' | 'assistant', content: '...' }]
+  var sessionId = null; // chat session id from the server, kept in memory only
   var busy = false;
 
   function setOpen(open) {
@@ -61,7 +62,7 @@
     return fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message, conversationHistory: history.slice(-MAX_HISTORY) }),
+      body: JSON.stringify({ message: message, conversationHistory: history.slice(-MAX_HISTORY), sessionId: sessionId }),
       signal: controller.signal
     })
       .then(function (res) {
@@ -72,6 +73,9 @@
       })
       .then(function (result) {
         var data = result.data;
+        if (data && typeof data.sessionId === 'string') {
+          sessionId = data.sessionId;
+        }
         if (data && typeof data.reply === 'string' && data.reply.trim() !== '') {
           return { ok: result.res.ok, reply: data.reply };
         }

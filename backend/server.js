@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
+const { getOrCreateSession } = require('./sessions');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 
@@ -115,7 +116,7 @@ async function attemptModel(model, contents, systemInstruction) {
 const STOP_STATUSES = new Set([400, 401, 403]);
 
 app.post('/api/chat', async (req, res) => {
-  const { message, conversationHistory } = req.body || {};
+  const { message, conversationHistory, sessionId: requestedSessionId } = req.body || {};
 
   if (message === undefined || message === null) {
     return res.status(400).json({
@@ -132,11 +133,15 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: '"conversationHistory" must be an array when provided.' });
   }
 
+  // Each chat session has its own separate in-memory order state (not used by the model yet).
+  const { sessionId } = getOrCreateSession(requestedSessionId);
+
   if (!ai) {
     console.error('Chat unavailable: GEMINI_API_KEY is not set');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
-      reply: FALLBACK_REPLY
+      reply: FALLBACK_REPLY,
+      sessionId
     });
   }
 
@@ -147,7 +152,8 @@ app.post('/api/chat', async (req, res) => {
     console.error('Chat unavailable: system prompt could not be read');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
-      reply: FALLBACK_REPLY
+      reply: FALLBACK_REPLY,
+      sessionId
     });
   }
 
@@ -157,7 +163,8 @@ app.post('/api/chat', async (req, res) => {
     console.error('Chat unavailable: menu data could not be read');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
-      reply: FALLBACK_REPLY
+      reply: FALLBACK_REPLY,
+      sessionId
     });
   }
 
@@ -175,7 +182,7 @@ app.post('/api/chat', async (req, res) => {
 
     if (result.reply) {
       console.log(`Gemini attempt ${i + 1}: model=${model} answered`);
-      return res.json({ reply: result.reply });
+      return res.json({ reply: result.reply, sessionId });
     }
 
     console.error(`Gemini attempt ${i + 1}: model=${model} status=${result.failure}`);
@@ -184,7 +191,8 @@ app.post('/api/chat', async (req, res) => {
       // Bad request or key problem: stop immediately, do not try more models.
       return res.status(502).json({
         error: 'The assistant could not answer right now.',
-        reply: FALLBACK_REPLY
+        reply: FALLBACK_REPLY,
+        sessionId
       });
     }
     // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
@@ -193,7 +201,8 @@ app.post('/api/chat', async (req, res) => {
   console.error('Gemini: all models failed');
   return res.status(503).json({
     error: 'The assistant is busy right now.',
-    reply: BUSY_REPLY
+    reply: BUSY_REPLY,
+    sessionId
   });
 });
 
