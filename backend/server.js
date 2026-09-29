@@ -3,6 +3,8 @@ const path = require('path');
 const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
 const { getOrCreateSession } = require('./sessions');
+const { loadMenu } = require('./data');
+const { TOOL_DECLARATIONS, executeTool } = require('./tools');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 
@@ -12,13 +14,15 @@ const PORT = process.env.PORT || 3000;
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_FALLBACK_MODELS = 'gemini-3.7-flash,gemini-flash-latest';
 const SYSTEM_PROMPT_PATH = path.join(__dirname, '..', 'prompts', 'system-prompt.md');
-const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
 const MAX_HISTORY_ITEMS = 10;
 const REQUEST_TIMEOUT_MS = 20000;
+const MAX_TOOL_ROUNDS = 4; // hard limit of tool-call rounds per customer message (free tier: ~5 requests/minute per model)
+const TOTAL_DEADLINE_MS = 80000; // stay under the browser's 90 s timeout
 const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
 const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
+const TOOL_LIMIT_REPLY = "Sorry, I couldn't finish that in one go. Please try again with one simple request, or contact staff.";
 
 // Ordered model chain: primary first, then fallbacks. Entries are trimmed; empty ones and duplicates are skipped.
 function buildModelChain() {
@@ -42,10 +46,7 @@ app.use(express.static(path.join(__dirname, '..', 'frontend')));
 // Menu grounding: data/menu.json is the single source of truth for items, prices, options and allergens.
 // It is read on every request, so edits to the file apply without a restart. Prices are shown as "<n> PKR".
 function buildMenuContext() {
-  const menu = JSON.parse(fs.readFileSync(MENU_PATH, 'utf8'));
-  if (!menu || !Array.isArray(menu.items) || menu.items.length === 0) {
-    throw new Error('invalid menu');
-  }
+  const menu = loadMenu();
   const currency = menu.currency || 'PKR';
   const lines = menu.items.map((item) => {
     const options = Array.isArray(item.requiredOptions) && item.requiredOptions.length
@@ -82,7 +83,7 @@ function buildContents(conversationHistory, message) {
 const TIMEOUT = Symbol('timeout');
 
 // One attempt on one model, limited to REQUEST_TIMEOUT_MS.
-// Returns { reply } on success, or { failure: <HTTP status number | 'timeout' | 'error'> }.
+// Returns { response } on success, or { failure: <HTTP status number | 'timeout' | 'error'> }.
 async function attemptModel(model, contents, systemInstruction) {
   const controller = new AbortController();
   let timer;
@@ -97,12 +98,18 @@ async function attemptModel(model, contents, systemInstruction) {
       ai.models.generateContent({
         model,
         contents,
-        config: { systemInstruction, abortSignal: controller.signal }
+        config: {
+          systemInstruction,
+          abortSignal: controller.signal,
+          tools: [{ functionDeclarations: TOOL_DECLARATIONS }]
+        }
       }),
       timeout
     ]);
-    const reply = typeof response.text === 'string' ? response.text.trim() : '';
-    return reply ? { reply } : { failure: 'error' };
+    const calls = response && response.functionCalls;
+    if (Array.isArray(calls) && calls.length > 0) return { response };
+    const reply = response && typeof response.text === 'string' ? response.text.trim() : '';
+    return reply ? { response } : { failure: 'error' };
   } catch (err) {
     if (err === TIMEOUT) return { failure: 'timeout' };
     const status = Number(err && err.status);
@@ -110,6 +117,21 @@ async function attemptModel(model, contents, systemInstruction) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Function-call turns written by one model carry that model's thought signatures. If the chain falls back to a
+// different model in the middle of a tool loop, use the documented "skip validation" placeholder instead.
+const turnAuthors = new WeakMap(); // model turn -> model that wrote it (kept off the objects sent to the API)
+
+function contentsForModel(contents, model) {
+  return contents.map((turn) => {
+    const author = turnAuthors.get(turn);
+    if (!author || author === model) return turn;
+    return {
+      ...turn,
+      parts: turn.parts.map((part) => (part.functionCall ? { ...part, thoughtSignature: 'skip_thought_signature_validator' } : part))
+    };
+  });
 }
 
 // Statuses that mean the request or key is wrong: trying another model will not help.
@@ -174,36 +196,88 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const contents = buildContents(conversationHistory || [], message);
+  const { state } = getOrCreateSession(sessionId); // this session's order state only
 
-  // One attempt per model, in order. Each model has its own quota, so never retry the same model.
-  for (let i = 0; i < MODEL_CHAIN.length; i++) {
-    const model = MODEL_CHAIN[i];
-    const result = await attemptModel(model, contents, systemInstruction);
+  // Tool-call loop. Each model request tries the chain in order (one attempt per model, never the same model twice).
+  // The model index only moves forward, so a model that failed is not retried within this customer message.
+  const startedAt = Date.now();
+  let modelIndex = 0;
+  let attempts = 0;
+  let toolRounds = 0;
 
-    if (result.reply) {
-      console.log(`Gemini attempt ${i + 1}: model=${model} answered`);
-      return res.json({ reply: result.reply, sessionId });
+  while (true) {
+    let response = null;
+    let usedModel = null;
+
+    while (modelIndex < MODEL_CHAIN.length && !response) {
+      if (Date.now() - startedAt > TOTAL_DEADLINE_MS) {
+        console.error('Gemini: time limit reached');
+        modelIndex = MODEL_CHAIN.length;
+        break;
+      }
+      const model = MODEL_CHAIN[modelIndex];
+      attempts += 1;
+      const result = await attemptModel(model, contentsForModel(contents, model), systemInstruction);
+
+      if (result.response) {
+        console.log(`Gemini attempt ${attempts}: model=${model} ok`);
+        response = result.response;
+        usedModel = model;
+        break;
+      }
+
+      console.error(`Gemini attempt ${attempts}: model=${model} status=${result.failure}`);
+
+      if (STOP_STATUSES.has(result.failure)) {
+        // Bad request or key problem: stop immediately, do not try more models.
+        return res.status(502).json({
+          error: 'The assistant could not answer right now.',
+          reply: FALLBACK_REPLY,
+          sessionId
+        });
+      }
+      // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
+      modelIndex += 1;
     }
 
-    console.error(`Gemini attempt ${i + 1}: model=${model} status=${result.failure}`);
-
-    if (STOP_STATUSES.has(result.failure)) {
-      // Bad request or key problem: stop immediately, do not try more models.
-      return res.status(502).json({
-        error: 'The assistant could not answer right now.',
-        reply: FALLBACK_REPLY,
+    if (!response) {
+      console.error('Gemini: all models failed');
+      return res.status(503).json({
+        error: 'The assistant is busy right now.',
+        reply: BUSY_REPLY,
         sessionId
       });
     }
-    // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
-  }
 
-  console.error('Gemini: all models failed');
-  return res.status(503).json({
-    error: 'The assistant is busy right now.',
-    reply: BUSY_REPLY,
-    sessionId
-  });
+    const calls = response.functionCalls;
+    if (!Array.isArray(calls) || calls.length === 0) {
+      console.log(`Gemini answered: model=${usedModel}`);
+      return res.json({ reply: response.text.trim(), sessionId });
+    }
+
+    if (toolRounds >= MAX_TOOL_ROUNDS) {
+      console.error('Gemini: tool-call limit reached');
+      return res.json({ reply: TOOL_LIMIT_REPLY, sessionId });
+    }
+    toolRounds += 1;
+    console.log(`Tool round ${toolRounds}: ${calls.map((c) => c.name).join(', ')}`);
+
+    // Keep the model's own function-call turn verbatim, then answer it with the tool results.
+    const modelTurn = response.candidates && response.candidates[0] && response.candidates[0].content;
+    const turn = modelTurn && Array.isArray(modelTurn.parts)
+      ? modelTurn
+      : { role: 'model', parts: calls.map((c) => ({ functionCall: c })) };
+    turnAuthors.set(turn, usedModel);
+    contents.push(turn);
+    contents.push({
+      role: 'user',
+      parts: calls.map((call) => {
+        const part = { name: call.name, response: executeTool(call.name, call.args, { state }) };
+        if (call.id) part.id = call.id;
+        return { functionResponse: part };
+      })
+    });
+  }
 });
 
 // Error handling: bad JSON gets a 400, anything else a generic 500 (nothing sensitive is logged or returned).
