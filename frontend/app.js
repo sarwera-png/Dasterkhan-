@@ -39,6 +39,11 @@
     return bubble;
   }
 
+  // Safety net for assistant replies only: drop bold markers (** and __) if the model uses them anyway.
+  function stripMarkdownMarkers(text) {
+    return text.replace(/\*\*|__/g, '');
+  }
+
   function setBusy(value) {
     busy = value;
     input.disabled = value;
@@ -103,10 +108,11 @@
 
     askServer(text).then(function (outcome) {
       typing.remove();
-      addMessage(outcome.reply, 'bot');
+      var replyText = stripMarkdownMarkers(outcome.reply);
+      addMessage(replyText, 'bot');
       if (outcome.ok) {
         history.push({ role: 'user', content: text });
-        history.push({ role: 'assistant', content: outcome.reply });
+        history.push({ role: 'assistant', content: replyText });
       }
       setBusy(false);
       if (win.classList.contains('open')) {
