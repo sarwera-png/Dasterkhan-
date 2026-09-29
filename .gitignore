@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Secrets (keep the example file)
+.env
+.env.*
+!.env.example
+
+# Local data
+data/orders.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor folders
+.vscode/
+.idea/
