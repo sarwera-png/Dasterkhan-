@@ -191,5 +191,27 @@
     </div>
   </footer>
 
+  <button type="button" class="chat-toggle" id="chat-toggle" aria-label="Open chat with Dastarkhwan Assistant" aria-expanded="false" aria-controls="chat-window">
+    <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true" focusable="false">
+      <path fill="currentColor" d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 1-2z"/>
+    </svg>
+  </button>
+
+  <section class="chat-window" id="chat-window" aria-label="Dastarkhwan Assistant chat">
+    <div class="chat-header">
+      <div class="chat-title">
+        <h2 class="chat-name">Dastarkhwan Assistant</h2>
+        <p class="ur chat-name-ur" lang="ur" dir="rtl">دسترخوان اسسٹنٹ</p>
+      </div>
+      <button type="button" class="chat-close" id="chat-close" aria-label="Close chat">&times;</button>
+    </div>
+    <div class="chat-messages" id="chat-messages" role="log" aria-live="polite"></div>
+    <form class="chat-form" id="chat-form" autocomplete="off">
+      <input type="text" class="chat-input" id="chat-input" placeholder="Type a message..." aria-label="Your message" maxlength="500">
+      <button type="submit" class="chat-send">Send</button>
+    </form>
+  </section>
+
+  <script src="app.js" defer></script>
 </body>
 </html>

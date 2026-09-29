@@ -208,7 +208,7 @@ h3 { margin: 0 0 0.1rem; font-size: 1.15rem; line-height: 1.3; }
   background: var(--charcoal-deep);
   color: var(--warm-white);
   text-align: center;
-  padding: 2rem 0;
+  padding: 2rem 0 6rem; /* extra space so the chat button never permanently covers the footer label */
   border-top: 3px solid var(--gold);
 }
 .demo-label {
@@ -234,4 +234,155 @@ h3 { margin: 0 0 0.1rem; font-size: 1.15rem; line-height: 1.3; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+}
+
+/* Chat widget (practice mock) */
+.chat-toggle {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 50;
+  width: 3.5rem;
+  height: 3.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 2px solid var(--charcoal-deep);
+  border-radius: 50%;
+  background: var(--gold);
+  color: var(--charcoal-deep);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s;
+}
+.chat-toggle:hover,
+.chat-toggle:focus-visible { background: var(--gold-soft); }
+.chat-toggle:focus-visible { outline: 3px solid var(--charcoal-deep); outline-offset: 2px; }
+
+.chat-window {
+  position: fixed;
+  right: 1rem;
+  bottom: 5.25rem;
+  z-index: 50;
+  width: min(22rem, calc(100vw - 2rem));
+  height: 30rem;
+  max-height: calc(100vh - 6.5rem);
+  max-height: calc(100dvh - 6.5rem);
+  display: flex;
+  flex-direction: column;
+  background: var(--warm-white);
+  border: 2px solid var(--gold);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(1.5rem);
+  transition: opacity 0.25s, transform 0.25s, visibility 0s linear 0.25s;
+}
+.chat-window.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition: opacity 0.25s, transform 0.25s, visibility 0s;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem 0.25rem 1rem;
+  background: var(--charcoal);
+  color: var(--warm-white);
+  border-bottom: 3px solid var(--gold);
+  border-radius: 8px 8px 0 0;
+}
+.chat-name { margin: 0; font-size: 1.05rem; line-height: 1.3; color: var(--gold); }
+.chat-name::after { display: none; }
+.chat-name-ur { margin: 0; font-size: 0.9rem; color: var(--warm-white); }
+
+.chat-close {
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--warm-white);
+  font-size: 1.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-close:hover,
+.chat-close:focus-visible { background: var(--gold); color: var(--charcoal-deep); }
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.chat-msg {
+  max-width: 85%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.chat-msg-user {
+  align-self: flex-end;
+  background: var(--gold);
+  color: var(--charcoal-deep);
+  border-bottom-right-radius: 4px;
+}
+.chat-msg-bot {
+  align-self: flex-start;
+  background: #fff;
+  color: var(--text);
+  border: 1px solid #e4dcc8;
+  border-bottom-left-radius: 4px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  background: var(--warm-white-alt);
+  border-top: 1px solid #e4dcc8;
+  border-radius: 0 0 8px 8px;
+}
+.chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #c9bfa6;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-size: 1rem;
+}
+.chat-input:focus-visible { outline: 3px solid var(--gold); outline-offset: 1px; }
+.chat-send {
+  flex: none;
+  padding: 0.55rem 1rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--charcoal);
+  color: var(--gold);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chat-send:hover,
+.chat-send:focus-visible { background: var(--charcoal-deep); color: var(--gold-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-window,
+  .chat-window.open { transition: none; }
 }
