@@ -7,6 +7,7 @@ const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
 const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
+const { renderPrompt, paymentLine, paymentLineUrdu } = require('./facts');
 const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
@@ -36,9 +37,10 @@ const SAVE_FAILED_MESSAGE = 'Sorry, we could not save your order, so it has NOT 
 
 // The receipt is written only from a saved order: it always contains the saved order number.
 function receiptMessage(order) {
-  const isDelivery = order.review.orderType === 'delivery';
-  const en = `Your order ${order.id} is confirmed and has been sent to the restaurant. Payment: cash on ${isDelivery ? 'delivery' : 'pickup'}. Thank you!`;
-  const ur = `آپ کا آرڈر ${order.id} کنفرم ہو گیا ہے اور ریسٹورنٹ کو بھیج دیا گیا ہے۔ ادائیگی: ${isDelivery ? 'ڈیلیوری' : 'پک اپ'} پر نقد۔ شکریہ!`;
+  const restaurant = loadRestaurant();
+  const type = order.review.orderType;
+  const en = `Your order ${order.id} is confirmed and has been sent to the restaurant. Payment: ${paymentLine(restaurant, type).toLowerCase()}. Thank you!`;
+  const ur = `آپ کا آرڈر ${order.id} کنفرم ہو گیا ہے اور ریسٹورنٹ کو بھیج دیا گیا ہے۔ ادائیگی: ${paymentLineUrdu(restaurant, type)}۔ شکریہ!`;
   return `${en}\n${ur}`;
 }
 const TOOL_LIMIT_REPLY = "Sorry, I couldn't finish that in one go. Please try again with one simple request, or contact staff.";
@@ -206,7 +208,7 @@ app.post('/api/chat', async (req, res) => {
 
   let systemInstruction;
   try {
-    systemInstruction = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8');
+    systemInstruction = renderPrompt(fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf8'), loadRestaurant()); // facts come from data/restaurant.json
   } catch (err) {
     console.error('Chat unavailable: system prompt could not be read');
     return res.status(503).json({

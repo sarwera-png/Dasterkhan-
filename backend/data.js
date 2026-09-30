@@ -43,7 +43,10 @@ function loadRestaurant() {
   const okTime = (t) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
   if (!r || !r.hours || !okTime(r.hours.open) || !okTime(r.hours.close)
     || !r.delivery || !Array.isArray(r.delivery.blocks) || !Number.isInteger(r.delivery.fee)
-    || !r.pickup || !Number.isInteger(r.pickup.fee) || typeof r.taxRate !== 'number') {
+    || !r.pickup || !Number.isInteger(r.pickup.fee) || typeof r.taxRate !== 'number'
+    || typeof r.name !== 'string' || typeof r.area !== 'string' || typeof r.city !== 'string' || typeof r.currency !== 'string'
+    || !Array.isArray(r.areaAliases) || !r.payment || typeof r.payment.method !== 'string' || typeof r.payment.timing !== 'string'
+    || typeof r.promisePreparationTime !== 'boolean') {
     throw new Error('invalid restaurant data');
   }
   return r;

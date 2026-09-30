@@ -3,6 +3,7 @@
 // it changes whenever the cart or any detail changes, so an old approval can never match a changed order.
 const crypto = require('crypto');
 const { computeTotals, totalsLines } = require('./pricing');
+const { paymentLine } = require('./facts');
 const { missingDetails, askText, addressText, formatHHMM } = require('./checkout');
 
 // JSON with sorted keys, so the same data always gives the same text.
@@ -59,7 +60,7 @@ function buildReview(state, data) {
     promotion: priced.discount ? { code: priced.discount.code, name: priced.discount.name, amount: priced.discount.amount } : null,
     totals: { foodSubtotal: priced.foodSubtotal, discountAmount: priced.discountAmount, deliveryFee: priced.deliveryFee, tax: priced.tax, total: priced.total },
     currency: 'PKR',
-    payment: isDelivery ? 'Cash on delivery' : 'Cash on pickup'
+    payment: paymentLine(restaurant, state.orderType)
   };
   review.reviewVersion = versionOf({ ...review });
   review.customerMessage = reviewText(review, state, restaurant, priced, data.ordersEnabled !== false);

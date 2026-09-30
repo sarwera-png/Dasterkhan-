@@ -3,6 +3,7 @@
 const { fail } = require('./fail');
 const { loadRestaurant } = require('./data');
 const { isClearYes } = require('./confirm');
+const { blocksRange } = require('./facts');
 
 const NAME_PATTERN = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]*$/u;
 
@@ -117,7 +118,7 @@ function parseBlock(raw) {
 
 function isInArea(raw, restaurant) {
   const text = typeof raw === 'string' ? raw.toLowerCase() : '';
-  return /gulshan|گلشن/.test(text) || text.includes(restaurant.area.toLowerCase());
+  return restaurant.areaAliases.some((alias) => text.includes(alias.toLowerCase())) || text.includes(restaurant.area.toLowerCase());
 }
 
 function outsideAreaError(restaurant) {
@@ -147,7 +148,8 @@ function missingDetails(state) {
   if (state.orderType === 'delivery') {
     const a = state.customer.address || {};
     if (!state.customer.phone) missing.push({ field: 'phone', ask: 'What is the best mobile number to reach you? (for example 03XX XXXXXXX)' });
-    if (!a.block) missing.push({ field: 'block', ask: 'Which block of Gulshan-e-Iqbal is it in (1 to 5)?' });
+    const { min, max } = blocksRange(loadRestaurant());
+    if (!a.block) missing.push({ field: 'block', ask: `Which block of ${loadRestaurant().area} is it in (${min} to ${max})?` });
     if (!a.house) missing.push({ field: 'house', ask: 'What is the house or flat number?' });
     if (!a.street) missing.push({ field: 'street', ask: 'Which street is it on?' });
   }
@@ -160,7 +162,7 @@ function askText(missing) {
   const others = missing.filter((m) => !['block', 'house', 'street'].includes(m.field));
   const asks = others.map((m) => m.ask);
   if (addressFields.length >= 2) {
-    asks.push(`Please tell me the ${addressFields.map((m) => ({ block: 'block number (1 to 5)', house: 'house or flat number', street: 'street' }[m.field])).join(', ').replace(/, ([^,]*)$/, ' and $1')} for the delivery address.`);
+    asks.push(`Please tell me the ${addressFields.map((m) => ({ block: `block number (${blocksRange(loadRestaurant()).min} to ${blocksRange(loadRestaurant()).max})`, house: 'house or flat number', street: 'street' }[m.field])).join(', ').replace(/, ([^,]*)$/, ' and $1')} for the delivery address.`);
   } else {
     asks.push(...addressFields.map((m) => m.ask));
   }
@@ -198,7 +200,7 @@ const declarations = [
         pickupTime: { type: 'STRING', description: 'Preferred pickup time in 24-hour HH:MM (for example 19:30), only if the customer gave one' },
         noPickupTimePreference: { type: 'BOOLEAN', description: 'true if the customer said they have no pickup time preference' },
         phone: { type: 'STRING', description: 'Delivery only: mobile number exactly as given, like 03001234567 or +923001234567' },
-        area: { type: 'STRING', description: 'Delivery only: the area or locality the customer named, if any (for example Gulshan-e-Iqbal or Clifton)' },
+        area: { type: 'STRING', description: 'Delivery only: the area or locality the customer named, if any' },
         block: { type: 'STRING', description: 'Delivery only: the block number, for example 3' },
         houseOrFlat: { type: 'STRING', description: 'Delivery only: house or flat number, as given' },
         street: { type: 'STRING', description: 'Delivery only: street name or number, as given' },

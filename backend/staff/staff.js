@@ -46,7 +46,7 @@
       card.appendChild(el('p', 'Preferred pickup time: ' + review.pickup.time));
     }
     var totals = review.totals || {};
-    card.appendChild(el('p', 'Total: ' + totals.total + ' PKR (cash on ' + (review.orderType === 'delivery' ? 'delivery' : 'pickup') + ')', 'total'));
+    card.appendChild(el('p', 'Total: ' + totals.total + ' PKR (' + String(review.payment || '').toLowerCase() + ')', 'total'));
 
     var next = flow[flow.indexOf(order.status) + 1];
     if (next) {
