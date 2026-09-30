@@ -7,6 +7,7 @@ const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
 const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
+const { guardReply } = require('./guard');
 const { renderPrompt, paymentLine, paymentLineUrdu } = require('./facts');
 const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
@@ -295,7 +296,9 @@ app.post('/api/chat', async (req, res) => {
     const calls = response.functionCalls;
     if (!Array.isArray(calls) || calls.length === 0) {
       console.log(`Gemini answered: model=${usedModel}`);
-      return res.json({ reply: response.text.trim(), ...extras() });
+      // A reply that claims the order is placed/confirmed is replaced unless the server really saved this session's order.
+      const reply = guardReply(response.text.trim(), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
+      return res.json({ reply, ...extras() });
     }
 
     if (toolRounds >= MAX_TOOL_ROUNDS) {

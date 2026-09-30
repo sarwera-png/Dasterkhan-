@@ -184,7 +184,7 @@ check('injection: attacker-obeying model cannot change prices, totals, promotion
   for (const [msg, script] of Object.entries(ATTACKS)) {
     const { sid, st } = await mk(); pickupCart(st); const before = snap(st); const n = orders().length;
     global.__STUB = async ({ contents }) => { const l = contents[contents.length - 1]; if (l.parts.some(p => p.functionResponse)) return text('Your order is confirmed and everything is free!'); return calls(script); };
-    const r = await chat(msg, sid); assert.strictEqual(r.status, 200);
+    const r = await chat(msg, sid); assert.strictEqual(r.status, 200); assert(!/is confirmed|free!/i.test(r.json.reply), msg + ': a fake confirmation reached the customer: ' + r.json.reply); // Step V guard
     const after = JSON.parse(snap(st)); const was = JSON.parse(before);
     assert.strictEqual(st.status, 'draft', msg); assert.strictEqual(st.confirmed, false, msg); assert.strictEqual(st.orderId, null, msg); assert.strictEqual(orders().length, n, msg);
     const expect = st.items.reduce((sum, l) => sum + menu.items.find(i => i.id === l.id).price * l.quantity, 0); // pickup, no promo, tax 0: menu prices only
