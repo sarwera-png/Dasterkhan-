@@ -109,10 +109,11 @@ function cleanLine(raw, { min = 1, max, pattern } = {}) {
 const HOUSE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\s\-\/#.,]*$/u;
 const STREET_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\s\-\/#.,'’]*$/u;
 
-// "3", "Block 3", "block-3" -> 3. Anything else ("13-D", "three-ish") is not understood: we ask again.
+// "3", "Block 3", "Block-3", "block no 3", "blk 3", "بلاک 3" -> 3. Bare "-1", "0", negatives, decimals and anything else
+// ("13-D", "three-ish") are not understood: we ask again. (A bare whole number is accepted because the model passes it in the block field.)
 function parseBlock(raw) {
   const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim().toLowerCase() : '';
-  const m = /^(?:block|blk|بلاک)?\s*[-#]?\s*(\d{1,2})$/.exec(text);
+  const m = /^(?:(?:block|blk|بلاک)(?:-|\s*#\s*|\s*(?:no\.?|number)\s*|\s+)?)?([1-9]\d?)$/.exec(text);
   return m ? Number(m[1]) : null;
 }
 

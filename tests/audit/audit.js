@@ -82,9 +82,9 @@ check('pickup: name only needed (no phone/address), total has no fee', () => {
 check('delivery: needs phone+address, Block 1-5 only, 150 fee, outside area refused', () => {
   const { state: st } = sessions.getOrCreateSession(); run(st, 'addItemToCart', { itemId: 'NAN01', quantity: 1 }); run(st, 'setOrderType', { orderType: 'delivery' });
   assert.strictEqual(st.totals.deliveryFee, 150); assert.strictEqual(st.totals.total, 190);
-  for (const b of ['6', '7', '13', '0', '99', 'abc', 'block 6']) { const r = run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }); assert.strictEqual(r.ok, false, 'block ' + b); assert.notStrictEqual(st.customer.address && st.customer.address.block, b); }
+  for (const b of ['6', '7', '13', '0', '-1', '-3', '1.5', '99', 'abc', 'block 6', 'block -1']) { const r = run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }); assert.strictEqual(r.ok, false, 'block ' + b); assert.notStrictEqual(st.customer.address && st.customer.address.block, b); }
   assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Sara', phone: '12345', ...addr }).ok, false);
-  for (const b of ['1', '2', '3', '4', '5']) assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }).ok, true, 'block ' + b);
+  for (const b of ['1', '2', '3', '4', '5', 'Block 1', 'Block-2', 'block no 3', 'blk 4', 'بلاک 5']) assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }).ok, true, 'block ' + b);
   assert.strictEqual(run(st, 'setCustomerDetails', { landmark: 'near the mall' }).ok === true && st.customer.address.block === 5, true);
 });
 // ---------- 6. address confirmation reset ----------

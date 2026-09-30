@@ -13,15 +13,16 @@ const delivery = () => { const s = fresh(); run(s, 'addItemToCart', { itemId: 'N
   assert(r.customerMessage.includes('block number (1 to 5), house or flat number and street')); assert.strictEqual(s.customer.address, null); assert(!FORBIDDEN.test(r.customerMessage));
   console.log('1) "Gulshan mein bhej dein" (only the area) -> nothing stored; asks name, phone and "the block number (1 to 5), house or flat number and street": PASS');
   // 2) outside delivery area
-  for (const blk of ['9', '6', '13', 'Block 19', 0, 7]) { const x = run(delivery(), 'setCustomerDetails', { block: blk }); assert.deepStrictEqual([x.ok, x.error], [false, 'outside_delivery_area'], String(blk)); }
+  for (const blk of ['9', '6', '13', 'Block 19', 7]) { const x = run(delivery(), 'setCustomerDetails', { block: blk }); assert.deepStrictEqual([x.ok, x.error], [false, 'outside_delivery_area'], String(blk)); }
+  { const x = run(delivery(), 'setCustomerDetails', { block: 0 }); assert.deepStrictEqual([x.ok, x.error], [false, 'invalid_block']); } // Step U: block 0 is not a block, the customer is asked again
   const b9 = delivery(); const x9 = run(b9, 'setCustomerDetails', { name: 'Ali', block: '9', houseOrFlat: '12', street: 'Street 4' });
   assert.strictEqual(x9.customerMessage, 'Sorry, we deliver only to Gulshan-e-Iqbal Blocks 1 to 5. Would you like to order for pickup instead?'); assert.strictEqual(b9.customer.name, null); assert.strictEqual(b9.customer.address, null); assert.strictEqual(b9.orderType, 'delivery'); assert(/Offer pickup, but do not switch/.test(x9.internalNote)); assert(!FORBIDDEN.test(x9.customerMessage));
   for (const area of ['Clifton', 'DHA Phase 6', 'Nazimabad']) assert.strictEqual(run(delivery(), 'setCustomerDetails', { area }).error, 'outside_delivery_area');
   for (const area of ['Gulshan-e-Iqbal', 'gulshan', 'گلشن اقبال']) assert.notStrictEqual(run(delivery(), 'setCustomerDetails', { area, name: 'Ali' }).error, 'outside_delivery_area');
   console.log('2) Block 9/6/13/19/0/7 and areas Clifton/DHA/Nazimabad refused with "we deliver only to Gulshan-e-Iqbal Blocks 1 to 5. Would you like to order for pickup instead?"; nothing stored (even the valid name in the same call); order type NOT switched by code: PASS');
   // 3) blocks 1-5 parse
-  for (const [inp, n] of [['1', 1], ['Block 3', 3], ['block-4', 4], [' 5 ', 5], [2, 2], ['بلاک 3', 3], ['#5', 5]]) assert.strictEqual(parseBlock(inp), n, String(inp));
-  for (const bad of ['13-D', 'three', '', null, '3a', 'block', '1.5']) assert.strictEqual(parseBlock(bad), null, String(bad));
+  for (const [inp, n] of [['1', 1], ['Block 3', 3], ['block-4', 4], [' 5 ', 5], [2, 2], ['بلاک 3', 3], ['Block #5', 5]]) assert.strictEqual(parseBlock(inp), n, String(inp));
+  for (const bad of ['13-D', 'three', '', null, '3a', 'block', '1.5', '#5', '-1', '0']) assert.strictEqual(parseBlock(bad), null, String(bad));
   for (const bad of ['13-D', 'three', '3a']) { const x = run(delivery(), 'setCustomerDetails', { block: bad }); assert.deepStrictEqual([x.error, x.customerMessage], ['invalid_block', 'Which block is it, from 1 to 5?']); }
   console.log('3) blocks "1", "Block 3", "block-4", "#5", "بلاک 3" understood; "13-D", "three", "3a" -> asked again ("Which block is it, from 1 to 5?"), never guessed: PASS');
   // 4) phone validation
