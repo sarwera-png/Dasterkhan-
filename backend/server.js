@@ -6,6 +6,7 @@ const { getOrCreateSession, getExistingSession } = require('./sessions');
 const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
+const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
@@ -363,6 +364,8 @@ app.post('/api/order/confirm', (req, res) => {
   console.log(`Order confirm: ${saved.created ? 'saved' : 'already saved'} ${saved.order.id}`);
   return res.json({ ok: true, confirmed: true, saved: true, orderId: saved.order.id, customerMessage: state.receipt });
 });
+
+app.use(staff.router); // /staff and /api/staff/*: fail closed without STAFF_PASSWORD
 
 // Error handling: bad JSON gets a 400, anything else a generic 500 (nothing sensitive is logged or returned).
 app.use((err, req, res, next) => {

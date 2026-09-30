@@ -73,4 +73,20 @@ function saveConfirmedOrder({ sessionId, reviewVersion, review }) {
   return { order, created: true };
 }
 
-module.exports = { saveConfirmedOrder, readOrders, ORDERS_PATH };
+const STATUS_FLOW = ['NEW', 'PREPARING', 'READY', 'COMPLETED'];
+
+// Moves an order one step forward (NEW -> PREPARING -> READY -> COMPLETED). Jumps, going back and repeating are refused.
+// Returns { order } or { error: 'not_found' | 'invalid_status' | 'invalid_transition' }. Throws if the file cannot be written.
+function advanceOrderStatus(id, newStatus) {
+  if (!STATUS_FLOW.includes(newStatus)) return { error: 'invalid_status' };
+  const orders = readOrders();
+  const order = orders.find((o) => o && o.id === id);
+  if (!order) return { error: 'not_found' };
+  if (STATUS_FLOW.indexOf(newStatus) !== STATUS_FLOW.indexOf(order.status) + 1) return { error: 'invalid_transition', current: order.status };
+  order.status = newStatus;
+  order.updatedAt = new Date().toISOString();
+  writeOrders(orders);
+  return { order };
+}
+
+module.exports = { saveConfirmedOrder, advanceOrderStatus, readOrders, STATUS_FLOW, ORDERS_PATH };
