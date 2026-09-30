@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node backend/server.js",
-    "audit": "node tests/audit/audit.js"
+    "audit": "node tests/audit/audit.js",
+    "journey": "node tests/journey/journey.js"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
