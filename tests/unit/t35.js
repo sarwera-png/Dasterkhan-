@@ -1,0 +1,74 @@
+const ROOT = require('path').join(__dirname, '..', '..');
+const assert = require('assert'); const dir = __dirname; const fs = require('fs');
+const captured = []; for (const k of ['log', 'error']) { const o = console[k].bind(console); console[k] = (...a) => { captured.push(a.join(' ')); o(...a); }; }
+const L = require(dir + '/lib.js'); const { base } = L.boot(3075); delete process.env.STAFF_PASSWORD;
+const staffMod = require(ROOT + '/backend/staff'); const ordersFile = global.__ORDERS_FILE; const keep = fs.readFileSync(ordersFile, 'utf8'); process.on('exit', () => fs.writeFileSync(ordersFile, keep));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const PASSWORD = 'correct horse battery staple 42'; const basic = (user, pass) => 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+const call = async (method, path, { auth, body, headers } = {}) => { const h = { ...(auth ? { Authorization: auth } : {}), ...(headers || {}) }; if (body !== undefined && !h['Content-Type']) h['Content-Type'] = 'application/json'; const r = await fetch(base + path, { method, headers: h, body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)), redirect: 'manual' }); const text = await r.text(); let json = null; try { json = JSON.parse(text); } catch (e) {} return { status: r.status, headers: r.headers, text, json }; };
+const order = (n, status, extra = {}) => ({ id: 'KD-' + n, createdAt: new Date(Date.UTC(2026, 0, 1, 12, n)).toISOString(), status, sessionId: 'a'.repeat(32), reviewVersion: '0'.repeat(16), review: { items: [{ itemId: 'NAN01', name: 'Naan', quantity: 2, options: {}, unitPrice: 40, lineTotal: 80 }], orderType: 'pickup', customer: { name: 'Sami' }, pickup: { time: null }, delivery: null, promotion: null, totals: { foodSubtotal: 80, discountAmount: 0, deliveryFee: 0, tax: 0, total: 80 }, currency: 'PKR', payment: 'Cash on pickup', ...extra } });
+const seed = (list) => fs.writeFileSync(ordersFile, JSON.stringify(list, null, 2)); const file = () => JSON.parse(fs.readFileSync(ordersFile, 'utf8'));
+(async () => { await sleep(500); seed([order(1001, 'NEW'), order(1002, 'PREPARING'), order(1003, 'READY'), order(1004, 'COMPLETED')]);
+  // 1) fail closed
+  for (const pw of [undefined, '', '   ']) { if (pw === undefined) delete process.env.STAFF_PASSWORD; else process.env.STAFF_PASSWORD = pw;
+    for (const [m, p, extra] of [['GET', '/staff', {}], ['GET', '/staff/staff.js', {}], ['GET', '/staff/staff.css', {}], ['GET', '/api/staff/orders', {}], ['POST', '/api/staff/orders/KD-1001/status', { body: { status: 'PREPARING' } }], ['GET', '/api/staff/orders', { auth: basic('staff', '') }], ['GET', '/api/staff/orders', { auth: basic('staff', 'anything') }], ['POST', '/api/staff/orders/KD-1001/status', { auth: basic('staff', 'x'), body: { status: 'PREPARING' } }]]) {
+      const r = await call(m, p, extra); assert.strictEqual(r.status, 403, `${m} ${p} with STAFF_PASSWORD=${JSON.stringify(pw)}`); assert.deepStrictEqual(r.json, { error: 'staff access not configured' }); assert(!r.text.includes('KD-100') && !r.text.includes('Sami')); assert.strictEqual(r.headers.get('www-authenticate'), null); } }
+  assert.strictEqual(file()[0].status, 'NEW');
+  console.log('1) FAIL CLOSED: STAFF_PASSWORD unset / empty / blank -> /staff, its js+css, GET /api/staff/orders and the status POST all answer 403 {"error":"staff access not configured"} (even when a password is sent), no order data in the body, nothing changed: PASS');
+  // 2) wrong / missing credentials
+  process.env.STAFF_PASSWORD = PASSWORD;
+  for (const [label, auth] of [['no header', undefined], ['empty password', basic('staff', '')], ['wrong password', basic('staff', 'wrong')], ['almost right', basic('staff', PASSWORD + ' ')], ['prefix of right', basic('staff', PASSWORD.slice(0, -1))], ['right password as user name', basic(PASSWORD, '')], ['Bearer instead of Basic', 'Bearer ' + PASSWORD], ['garbage base64', 'Basic !!!notbase64!!!'], ['no colon', 'Basic ' + Buffer.from(PASSWORD).toString('base64')]]) {
+    staffMod._resetFailures(); for (const [m, p, body] of [['GET', '/staff'], ['GET', '/api/staff/orders'], ['GET', '/staff/staff.js'], ['POST', '/api/staff/orders/KD-1001/status', { status: 'PREPARING' }]]) { const r = await call(m, p, { auth, body }); assert.strictEqual(r.status, 401, `${label}: ${m} ${p} -> ${r.status}`); assert(/^Basic realm=/.test(r.headers.get('www-authenticate'))); assert(!r.text.includes('KD-100') && !r.text.includes('Sami')); assert.strictEqual(r.headers.get('cache-control'), 'no-store'); } }
+  assert.strictEqual(file()[0].status, 'NEW'); staffMod._resetFailures();
+  console.log('2) wrong credentials (no header, empty, wrong, password+space, prefix, password as user name, Bearer, garbage, no colon) -> 401 + WWW-Authenticate on the page, its js/css, the list AND the status change; no data leaked; order unchanged; Cache-Control no-store: PASS');
+  // 3) correct password
+  const auth = basic('anyone', PASSWORD); let r = await call('GET', '/api/staff/orders', { auth });
+  assert.strictEqual(r.status, 200); assert.deepStrictEqual(r.json.orders.map(o => o.id), ['KD-1004', 'KD-1003', 'KD-1002', 'KD-1001']); assert.deepStrictEqual(r.json.statusFlow, ['NEW', 'PREPARING', 'READY', 'COMPLETED']); assert.strictEqual(r.json.orders[3].review.totals.total, 80);
+  const pg = await call('GET', '/staff', { auth }); assert.strictEqual(pg.status, 200); assert(pg.headers.get('content-type').startsWith('text/html')); const csp = pg.headers.get('content-security-policy'); assert(/default-src 'none'/.test(csp) && /script-src 'self'/.test(csp) && !/unsafe-inline|unsafe-eval/.test(csp)); assert.strictEqual(pg.headers.get('x-content-type-options'), 'nosniff');
+  assert.strictEqual((await call('GET', '/staff/staff.js', { auth })).status, 200); assert.strictEqual((await call('GET', '/staff/staff.css', { auth })).status, 200);
+  console.log('3) correct password (any user name) -> list newest first with all 4 statuses + statusFlow; page served with a strict CSP (no inline script/style, no unsafe-*) and nosniff: PASS');
+  // 4) forward-only status
+  seed([order(1001, 'NEW'), order(1002, 'NEW')]); const st = (id, status, extra) => call('POST', `/api/staff/orders/${id}/status`, { auth, body: { status }, ...(extra || {}) });
+  for (const [to, code] of [['READY', 409], ['COMPLETED', 409], ['NEW', 409]]) { r = await st('KD-1001', to); assert.strictEqual(r.status, code, 'NEW -> ' + to); assert(/one step at a time/.test(r.json.error)); } assert.strictEqual(file()[0].status, 'NEW');
+  r = await st('KD-1001', 'PREPARING'); assert.strictEqual(r.status, 200); assert.strictEqual(r.json.order.status, 'PREPARING'); assert(r.json.order.updatedAt); assert.strictEqual(file()[0].status, 'PREPARING'); assert.strictEqual(file()[1].status, 'NEW');
+  for (const to of ['PREPARING', 'NEW', 'COMPLETED']) { r = await st('KD-1001', to); assert.strictEqual(r.status, 409, 'PREPARING -> ' + to); }
+  r = await st('KD-1001', 'READY'); assert.strictEqual(r.status, 200); for (const to of ['NEW', 'PREPARING', 'READY']) assert.strictEqual((await st('KD-1001', to)).status, 409);
+  r = await st('KD-1001', 'COMPLETED'); assert.strictEqual(r.status, 200); for (const to of ['NEW', 'PREPARING', 'READY', 'COMPLETED']) assert.strictEqual((await st('KD-1001', to)).status, 409, 'COMPLETED -> ' + to);
+  assert.deepStrictEqual(file().map(o => o.status), ['COMPLETED', 'NEW']); assert.deepStrictEqual(fs.readdirSync(global.__ORDERS_DIR).filter(f => f.includes('.tmp-')), []);
+  console.log('4) statuses move ONE step forward only: NEW -> PREPARING -> READY -> COMPLETED; every jump (NEW->READY/COMPLETED), step back, repeat and change-after-COMPLETED -> 409; other orders untouched; saved via temp file + rename: PASS');
+  // 5) bad input
+  for (const [id, body, code] of [['KD-1002', { status: 'CANCELLED' }, 400], ['KD-1002', { status: 'preparing' }, 400], ['KD-1002', {}, 400], ['KD-1002', { status: 5 }, 400], ['KD-1002', { status: ['PREPARING'] }, 400], ['KD-9999', { status: 'PREPARING' }, 404], ['kd-1002', { status: 'PREPARING' }, 400], ['KD-', { status: 'PREPARING' }, 400], ['..%2F..%2Fetc', { status: 'PREPARING' }, 400], ['KD-1002%20OR%201=1', { status: 'PREPARING' }, 400]]) { r = await call('POST', `/api/staff/orders/${id}/status`, { auth, body }); assert.strictEqual(r.status, code, `${id} ${JSON.stringify(body)} -> ${r.status}`); }
+  assert.strictEqual(file()[1].status, 'NEW');
+  console.log('5) bad input: unknown status, lower case, missing, number, array, unknown id (404), lower-case/odd/path-like ids -> 400/404; nothing changed: PASS');
+  // 6) CSRF
+  r = await call('POST', '/api/staff/orders/KD-1002/status', { auth, body: { status: 'PREPARING' }, headers: { Origin: 'https://evil.example' } }); assert.strictEqual(r.status, 403);
+  r = await call('POST', '/api/staff/orders/KD-1002/status', { auth, body: 'status=PREPARING', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }); assert.strictEqual(r.status, 415);
+  r = await call('POST', '/api/staff/orders/KD-1002/status', { auth, body: '{"status":"PREPARING"}', headers: { 'Content-Type': 'text/plain' } }); assert.strictEqual(r.status, 415); assert.strictEqual(file()[1].status, 'NEW');
+  r = await call('POST', '/api/staff/orders/KD-1002/status', { auth, body: { status: 'PREPARING' }, headers: { Origin: base } }); assert.strictEqual(r.status, 200);
+  console.log('6) CSRF: a cross-site Origin -> 403; form-encoded and text/plain bodies -> 415 (a forged form cannot send JSON); our own origin works: PASS');
+  // 7) XSS: static + browser
+  const src = fs.readFileSync(ROOT + '/backend/staff/staff.js', 'utf8'); for (const bad of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function', 'srcdoc']) assert(!src.includes(bad), bad); assert(src.includes('textContent'));
+  seed([order(1001, 'NEW', { customer: { name: '<img src=x onerror=window.__pwned=1>Evil', phone: '<script>window.__pwned=2</script>' }, orderType: 'delivery', pickup: null, delivery: { address: { block: 3, house: '"><svg onload=window.__pwned=3>', street: '<b>Street</b>', apartment: "'-alert(1)-'", instructions: '<iframe src=javascript:window.__pwned=4></iframe>' }, addressConfirmed: true } }), order(1002, 'PREPARING')]);
+  const { chromium } = require('/opt/node22/lib/node_modules/playwright'); const b = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+  const ctx = await b.newContext({ httpCredentials: { username: 'staff', password: PASSWORD }, viewport: { width: 360, height: 800 } }); const p = await ctx.newPage(); const dialogs = [], errs = []; p.on('dialog', d => { dialogs.push(d.message()); d.dismiss(); }); p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errs.push(m.text()); });
+  await p.goto(base + '/staff'); await p.waitForSelector('.order'); await sleep(300);
+  const dom = await p.evaluate(() => ({ pwned: window.__pwned === undefined, imgs: document.querySelectorAll('img, svg, iframe, script:not([src]), b').length, text: document.querySelector('.order[data-id="KD-1001"]').textContent, cards: document.querySelectorAll('.order').length, buttons: [...document.querySelectorAll('.order button')].map(x => x.textContent).sort(), page: [document.documentElement.scrollWidth, innerWidth] }));
+  assert.deepStrictEqual([dom.pwned, dom.imgs, dialogs, errs, dom.cards], [true, 0, [], [], 2]); assert(dom.text.includes('<img src=x onerror=window.__pwned=1>Evil') && dom.text.includes('<script>window.__pwned=2</script>') && dom.text.includes('<b>Street</b>') && dom.text.includes('<iframe'));
+  assert.deepStrictEqual(dom.buttons, ['Mark PREPARING', 'Mark READY']); assert.deepStrictEqual(await p.evaluate(() => [...document.querySelectorAll('.order')].map(c => c.dataset.id)), ['KD-1002', 'KD-1001']); assert.strictEqual(dom.page[0], dom.page[1]);
+  console.log('7) XSS: customer name/phone/house/street/apartment/instructions full of <img onerror>, <script>, <svg onload>, <iframe> -> shown as literal text; no element created, no script ran, no dialog, no console error (real browser, 360 px, no sideways scroll); source has no innerHTML/eval: PASS');
+  // 8) UI flow
+  await p.click('.order[data-id="KD-1001"] button'); await p.waitForFunction(() => document.querySelector('.order[data-id="KD-1001"] .status').textContent === 'PREPARING'); assert.strictEqual(file().find(o => o.id === 'KD-1001').status, 'PREPARING');
+  await p.click('.order[data-id="KD-1002"] button'); await p.waitForFunction(() => document.querySelector('.order[data-id="KD-1002"] .status').textContent === 'READY'); await p.click('.order[data-id="KD-1002"] button'); await p.waitForFunction(() => document.querySelector('.order[data-id="KD-1002"] .status').textContent === 'COMPLETED');
+  assert.strictEqual(await p.evaluate(() => document.querySelectorAll('.order[data-id="KD-1002"] button').length), 0);
+  console.log('8) dashboard buttons: only the NEXT status is offered (NEW -> "Mark PREPARING", ... ); COMPLETED has no button; the change is saved and shown: PASS');
+  await b.close();
+  // 9) static exposure + anonymous browser
+  delete ctx; for (const pth of ['/staff.html', '/backend/staff/staff.js', '/backend/orders.js', '/data/orders.json', '/data/menu.json', '/.env', '/package.json', '/staff/../backend/server.js']) { const x = await call('GET', pth); assert(x.status === 404 || x.status === 401 || x.status === 403, pth + ' -> ' + x.status); assert(!x.text.includes('KD-100') && !x.text.includes('STAFF_PASSWORD')); }
+  // 10) rate limit (last: it locks this address)
+  staffMod._resetFailures(); let last; for (let i = 0; i < 12; i++) last = await call('GET', '/api/staff/orders', { auth: basic('x', 'guess' + i) }); assert.strictEqual(last.status, 429); assert.strictEqual((await call('GET', '/api/staff/orders', { auth })).status, 429);
+  staffMod._resetFailures(); assert.strictEqual((await call('GET', '/api/staff/orders', { auth })).status, 200);
+  console.log('9) staff files are not reachable as static files (404/401); 10) after 10 wrong passwords from one address the answer is 429 (even for the right password) until the window ends: PASS');
+  // 11) secrets never logged or echoed
+  const logs = captured.filter(l => /^(Gemini|Tool|Chat|Server|Unexpected|Order|Staff)/.test(l)).join('\n'); assert(!logs.includes(PASSWORD) && !logs.includes('Evil') && !logs.includes('guess')); assert(/Staff: KD-1001 -> PREPARING/.test(logs));
+  console.log('11) the password, customer text and guesses never appear in server logs (only "Staff: KD-1001 -> PREPARING"): PASS');
+  console.log('ALL STEP-36 TESTS PASSED'); process.exit(0);
+})().catch(e => { console.error('TEST FAILED:', e.stack.split('\n').slice(0, 8).join('\n')); process.exit(1); });

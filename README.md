@@ -31,6 +31,16 @@ This is a **classroom training demo for a FICTIONAL restaurant** (Karachi Dastar
 
 Without `GEMINI_API_KEY` the chat answers with a safe "please contact staff" message. **Without `STAFF_PASSWORD` the staff dashboard is locked completely (HTTP 403)**: it never opens unprotected.
 
+## How to run tests
+
+Everything uses a **fake (stub) AI model** and **temporary order files**: no real Gemini call, and `data/orders.json` is never touched.
+
+- `npm test` - runs everything (about 1 minute): unit and feature tests, the audit, the browser journey, UI layout tests and basic server checks.
+- `npm run audit` - only the system audit (prices, totals, promotions, confirmation gate, prompt-injection attempts).
+- `npm run journey` - only the full customer journey in a real browser at 1280 px and 360 px.
+
+The browser tests need Playwright with Chromium, which is **not** a project dependency (install it globally; `npm test` finds a global install). Use Node.js 22 or newer.
+
 ## Ordering switch (ORDERS_ENABLED)
 
 Ordering is **off by default** (fail closed). Orders can be placed only when `ORDERS_ENABLED` is exactly `true`; unset, empty, `false`, `TRUE`, `1` or anything else means demo mode.
