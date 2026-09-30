@@ -1,5 +1,5 @@
 // Tools the assistant can call (Gemini function calling). All validation is done here in code,
-// against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, message }.
+// against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, customerMessage, internalNote }.
 const { loadMenu, loadRecommendations, loadPromotions } = require('./data');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
@@ -110,7 +110,16 @@ const TOOL_DECLARATIONS = [
   }
 ];
 
-const fail = (error, message, extra) => ({ ok: false, error, message, ...(extra || {}) });
+// Every failure has two separate texts:
+//  - customerMessage: short, polite, safe to say to the customer (the model may translate it, but must not add internals)
+//  - internalNote: guidance for the model only; it must never be repeated to the customer
+const fail = (error, customerMessage, extra, internalNote) => ({
+  ok: false,
+  error,
+  customerMessage,
+  ...(internalNote ? { internalNote } : {}),
+  ...(extra || {})
+});
 
 function normalize(text) {
   return typeof text === 'string' ? text.trim().toLowerCase() : '';
@@ -127,20 +136,21 @@ function validateItem(menu, itemId) {
   const item = findMenuItem(menu, itemId);
   if (!item) {
     const available = menu.items.filter((i) => i.available === true).map((i) => `${i.id} (${i.name})`);
-    return { error: fail('unknown_item', 'That item is not on the menu. Do not offer or add it.', { availableItems: available }) };
+    return { error: fail('unknown_item', "Sorry, that item isn't on our menu.", { availableItems: available },
+      'Do not offer, add or promise this item. Suggest only real items from availableItems.') };
   }
   if (item.available !== true) {
-    return { error: fail('item_unavailable', `${item.name} is not available right now.`) };
+    return { error: fail('item_unavailable', `Sorry, ${item.name} isn't available right now.`, null, 'Do not add it. Suggest an available item from the menu instead.') };
   }
   return { item };
 }
 
 function validateQuantity(quantity) {
   if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1) {
-    return fail('invalid_quantity', 'Quantity must be a whole number of 1 or more. Ask the customer how many they want.');
+    return fail('invalid_quantity', 'Quantity must be a whole number, at least 1.', null, 'Nothing was changed. Ask the customer how many they want.');
   }
   if (quantity > MAX_QUANTITY) {
-    return fail('invalid_quantity', `Quantity cannot be more than ${MAX_QUANTITY} for one item. Ask the customer to check with staff for larger orders.`);
+    return fail('invalid_quantity', `Sorry, the most I can add for one item is ${MAX_QUANTITY}. For larger orders please ask our staff.`, null, 'Technical limit per cart line. Nothing was changed.');
   }
   return null;
 }
@@ -150,7 +160,7 @@ function validateQuantity(quantity) {
 function validateOptions(item, optionList) {
   const required = item.requiredOptions || [];
   if (optionList !== undefined && optionList !== null && !Array.isArray(optionList)) {
-    return { error: fail('invalid_option', 'Options must be a list of {name, choice}.') };
+    return { error: fail('invalid_option', "Sorry, I didn't understand those choices. Could you tell me again?", null, 'Options must be a list of {name, choice}. Nothing was changed.') };
   }
   const chosen = {};
   for (const entry of optionList || []) {
@@ -158,22 +168,23 @@ function validateOptions(item, optionList) {
     if (!spec) {
       const names = required.map((r) => r.name);
       return { error: fail('invalid_option', names.length
-        ? `${item.name} has no option called "${entry && entry.name}". Its options are: ${names.join(', ')}.`
-        : `${item.name} has no options. Do not add any.`) };
+        ? `Sorry, ${item.name} doesn't have that option. Its options are: ${names.join(', ')}.`
+        : `Sorry, ${item.name} has no options to choose.`, null, 'Do not add options that are not listed. Nothing was changed.') };
     }
     const choice = spec.choices.find((c) => normalize(c) === normalize(entry.choice));
     if (!choice) {
-      return { error: fail('invalid_option_choice', `"${entry.choice}" is not a valid ${spec.name} for ${item.name}. Choose one of: ${spec.choices.join(', ')}.`,
-        { missingOptions: [{ name: spec.name, choices: spec.choices }] }) };
+      return { error: fail('invalid_option_choice', `Sorry, that isn't a choice for ${spec.name}. Please choose ${spec.choices.join(' or ')}.`,
+        { missingOptions: [{ name: spec.name, choices: spec.choices }] }, 'Ask the customer to pick one of the listed choices. Nothing was changed.') };
     }
     if (chosen[spec.name] !== undefined && chosen[spec.name] !== choice) {
-      return { error: fail('invalid_option', `Two different values were given for ${spec.name}. Ask the customer which one they want.`) };
+      return { error: fail('invalid_option', `I got two different ${spec.name} choices. Which one would you like?`, null, 'Nothing was changed.') };
     }
     chosen[spec.name] = choice;
   }
   const missing = required.filter((r) => chosen[r.name] === undefined).map((r) => ({ name: r.name, choices: r.choices }));
   if (missing.length) {
-    return { error: fail('missing_options', `Ask the customer to choose: ${missing.map((m) => `${m.name} (${m.choices.join(' or ')})`).join('; ')}. Do not guess.`, { missingOptions: missing }) };
+    return { error: fail('missing_options', missing.map((m) => `Please choose your ${m.name}: ${m.choices.join(' or ')}.`).join(' '),
+      { missingOptions: missing }, 'Ask the customer to choose; do not guess. The item has not been added yet.') };
   }
   return { options: chosen };
 }
@@ -212,27 +223,27 @@ function addItemToCart(args, ctx) {
   const existing = cart.find((line) => line.id === item.id && sameOptions(line.options, checked.options));
   if (existing) {
     if (existing.quantity + args.quantity > MAX_QUANTITY) {
-      return fail('invalid_quantity', `The cart already has ${existing.quantity} of this item. The most allowed on one line is ${MAX_QUANTITY}.`);
+      return fail('invalid_quantity', `You already have ${existing.quantity} of this in your cart, and the most I can put on one line is ${MAX_QUANTITY}. For larger orders please ask our staff.`, null, 'Nothing was changed.');
     }
     existing.quantity += args.quantity; // same item and options: one line, never a duplicate
-    return { ok: true, mergedIntoExistingLine: true, line: lineView(existing), cartLineCount: cart.length };
+    return { ok: true, mergedIntoExistingLine: true, line: lineView(existing), cartLineCount: cart.length, customerMessage: `Updated: you now have ${describeLine(existing)} in your cart.` };
   }
   ctx.state.lineCounter += 1;
   const line = { lineId: `L${ctx.state.lineCounter}`, id: item.id, name: item.name, quantity: args.quantity, options: checked.options };
   cart.push(line);
-  return { ok: true, mergedIntoExistingLine: false, line: lineView(line), cartLineCount: cart.length };
+  return { ok: true, mergedIntoExistingLine: false, line: lineView(line), cartLineCount: cart.length, customerMessage: `Added ${describeLine(line)} to your cart.` };
 }
 
 // Finds the one cart line the customer means. Returns { line } or { error }.
 function findCartLine(cart, args) {
   if (args.lineId !== undefined && args.lineId !== null && args.lineId !== '') {
     const byId = cart.find((line) => line.lineId === args.lineId);
-    return byId ? { line: byId } : { error: fail('not_in_cart', 'There is no cart line with that lineId.') };
+    return byId ? { line: byId } : { error: fail('not_in_cart', "Sorry, I couldn't find that item in your cart.", null, 'There is no cart line with that lineId. Nothing was changed.') };
   }
   const key = normalize(args.itemId);
   let candidates = cart.filter((line) => normalize(line.id) === key || normalize(line.name) === key);
   if (candidates.length === 0) {
-    return { error: fail('not_in_cart', 'That item is not in the cart. Use addItemToCart to add it.') };
+    return { error: fail('not_in_cart', "Sorry, that item isn't in your cart.", null, 'Nothing was changed. If the customer wants it, use addItemToCart.') };
   }
   if (candidates.length > 1 && Array.isArray(args.currentOptions)) {
     const wanted = {};
@@ -243,10 +254,11 @@ function findCartLine(cart, args) {
       Object.entries(line.options).some(([n, c]) => normalize(n) === name && normalize(c) === choice)));
   }
   if (candidates.length > 1) {
-    return { error: fail('ambiguous_line', 'The cart has several lines of this item with different options. Ask the customer which one to change.', { lines: candidates.map(lineView) }) };
+    return { error: fail('ambiguous_line', `You have more than one ${candidates[0].name} in your cart with different options. Which one do you mean?`,
+      { lines: candidates.map(lineView) }, 'Ask which one, then retry with currentOptions or lineId. Nothing was changed.') };
   }
   if (candidates.length === 0) {
-    return { error: fail('not_in_cart', 'No cart line of that item has those options.') };
+    return { error: fail('not_in_cart', "Sorry, I couldn't find that version of the item in your cart.", null, 'No cart line of that item has those options. Nothing was changed.') };
   }
   return { line: candidates[0] };
 }
@@ -260,7 +272,7 @@ function modifyItem(args, ctx) {
   const quantityGiven = args.quantity !== undefined && args.quantity !== null;
   const optionsGiven = Array.isArray(args.options) && args.options.length > 0;
   if (!quantityGiven && !optionsGiven) {
-    return fail('nothing_to_change', 'Say what to change: a new quantity and/or new option choices.');
+    return fail('nothing_to_change', 'What would you like to change: the quantity or an option?', null, 'Nothing was changed.');
   }
 
   const { item, error } = validateItem(loadMenu(), line.id);
@@ -291,15 +303,15 @@ function modifyItem(args, ctx) {
   const twin = cart.find((other) => other !== line && other.id === line.id && sameOptions(other.options, newOptions));
   if (twin) {
     if (twin.quantity + newQuantity > MAX_QUANTITY) {
-      return fail('invalid_quantity', `Merging would make more than ${MAX_QUANTITY} on one line.`);
+      return fail('invalid_quantity', `Sorry, that would put more than ${MAX_QUANTITY} on one line. For larger orders please ask our staff.`, null, 'Nothing was changed.');
     }
     twin.quantity += newQuantity;
     cart.splice(cart.indexOf(line), 1);
-    return { ok: true, mergedWithLine: twin.lineId, line: lineView(twin), cartLineCount: cart.length };
+    return { ok: true, mergedWithLine: twin.lineId, line: lineView(twin), cartLineCount: cart.length, customerMessage: `Updated: you now have ${describeLine(twin)} in your cart.` };
   }
   line.quantity = newQuantity;
   line.options = newOptions;
-  return { ok: true, line: lineView(line), cartLineCount: cart.length };
+  return { ok: true, line: lineView(line), cartLineCount: cart.length, customerMessage: `Updated: you now have ${describeLine(line)} in your cart.` };
 }
 
 function removeItem(args, ctx) {
@@ -313,7 +325,7 @@ function removeItem(args, ctx) {
     const quantityError = validateQuantity(args.quantity);
     if (quantityError) return quantityError;
     if (args.quantity > line.quantity) {
-      return fail('invalid_quantity', `The cart has only ${line.quantity} of ${line.name}, so ${args.quantity} cannot be removed. Ask the customer what they want.`);
+      return fail('invalid_quantity', `You only have ${line.quantity} of ${line.name} in your cart, so I can't remove ${args.quantity}.`, null, 'Nothing was changed. Ask the customer what they want.');
     }
   }
   const removedQuantity = quantityGiven ? args.quantity : line.quantity;
@@ -321,10 +333,10 @@ function removeItem(args, ctx) {
 
   if (removedQuantity >= line.quantity) {
     cart.splice(cart.indexOf(line), 1);
-    return { ok: true, lineRemoved: true, removed, remainingLine: null, cartLineCount: cart.length };
+    return { ok: true, lineRemoved: true, removed, remainingLine: null, cartLineCount: cart.length, customerMessage: `Removed ${describeLine({ ...line, quantity: removedQuantity })} from your cart.` };
   }
   line.quantity -= removedQuantity;
-  return { ok: true, lineRemoved: false, removed, remainingLine: lineView(line), cartLineCount: cart.length };
+  return { ok: true, lineRemoved: false, removed, remainingLine: lineView(line), cartLineCount: cart.length, customerMessage: `Removed ${removedQuantity} x ${line.name}. You now have ${describeLine(line)} in your cart.` };
 }
 
 function describeLine(line) {
@@ -336,14 +348,15 @@ function describeLine(line) {
 function viewCart(args, ctx) {
   const cart = ctx.state.items;
   if (cart.length === 0) {
-    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.' };
+    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', customerMessage: 'Your cart is empty.' };
   }
   return {
     ok: true,
     isEmpty: false,
     lineCount: cart.length,
     lines: cart.map((line) => ({ ...lineView(line), text: describeLine(line) })),
-    summary: cart.map(describeLine).join('\n')
+    summary: cart.map(describeLine).join('\n'),
+    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}`
   };
 }
 
@@ -355,12 +368,12 @@ function getRecommendations(args, ctx) {
 
   if (args.declinedItemIds !== undefined && args.declinedItemIds !== null) {
     if (!Array.isArray(args.declinedItemIds)) {
-      return fail('invalid_declined', 'declinedItemIds must be a list of menu item ids.');
+      return fail('invalid_declined', "Sorry, I couldn't note that. Which item would you rather skip?", null, 'declinedItemIds must be a list of menu item ids. Nothing was recorded.');
     }
     const toRecord = [];
     for (const raw of args.declinedItemIds) {
       const found = findMenuItem(menu, raw);
-      if (!found) return fail('unknown_item', 'One of the declined items is not on the menu.');
+      if (!found) return fail('unknown_item', "Sorry, that item isn't on our menu.", null, 'Nothing was recorded.');
       toRecord.push(found.id);
     }
     for (const id of toRecord) {
@@ -369,7 +382,7 @@ function getRecommendations(args, ctx) {
   }
 
   if (state.items.length === 0) {
-    return { ok: true, suggestions: [], message: 'The cart is empty, so there is nothing to base a suggestion on.' };
+    return { ok: true, suggestions: [], internalNote: 'The cart is empty, so there is nothing to base a suggestion on. Do not suggest anything.' };
   }
 
   const { maxSuggestions, pairings, fallback } = loadRecommendations();
@@ -398,7 +411,7 @@ function getRecommendations(args, ctx) {
   return {
     ok: true,
     suggestions,
-    message: suggestions.length
+    internalNote: suggestions.length
       ? 'Offer these as a suggestion only. Do not add anything unless the customer clearly says yes.'
       : 'No suggestions right now. Do not suggest anything.'
   };
@@ -413,7 +426,7 @@ function foodSubtotal(state, menu) {
   let subtotal = 0;
   for (const line of state.items) {
     const item = menu.items.find((i) => i.id === line.id);
-    if (!item || typeof item.price !== 'number') return { error: fail('cart_invalid', 'An item in the cart is no longer on the menu. Ask the customer to review the cart.') };
+    if (!item || typeof item.price !== 'number') return { error: fail('cart_invalid', 'Sorry, one of the items in your cart is no longer on our menu. Please review your cart.', null, 'Ask the customer to review the cart.') };
     subtotal += item.price * line.quantity;
   }
   return { subtotal };
@@ -426,15 +439,15 @@ function checkEligibility(promo, subtotal, orderType) {
     && !(rules.orderTypes.includes('pickup') && rules.orderTypes.includes('delivery'));
   if (restrictsOrderType) {
     if (!orderType) {
-      return fail('order_type_needed', `This code depends on the order type. Ask the customer whether the order is for ${rules.orderTypes.join(' or ')}.`);
+      return fail('order_type_needed', 'This code depends on the order type. Is your order for pickup or delivery?', null, 'The code has not been applied yet. Ask; do not assume.');
     }
     if (!rules.orderTypes.includes(orderType)) {
-      return fail('order_type_not_eligible', `This code is only for ${rules.orderTypes.join(' or ')} orders.`);
+      return fail('order_type_not_eligible', `Sorry, this code is only for ${rules.orderTypes.join(' or ')} orders.`, null, 'The code has not been applied.');
     }
   }
   if (typeof rules.minFoodSubtotal === 'number' && subtotal < rules.minFoodSubtotal) {
-    return fail('below_minimum', `This code needs a food subtotal of at least ${rules.minFoodSubtotal} PKR. The cart's food subtotal is ${subtotal} PKR.`,
-      { foodSubtotal: subtotal, minFoodSubtotal: rules.minFoodSubtotal, shortBy: rules.minFoodSubtotal - subtotal });
+    return fail('below_minimum', `Sorry, this code needs at least ${rules.minFoodSubtotal} PKR of food. Your food total is ${subtotal} PKR.`,
+      { foodSubtotal: subtotal, minFoodSubtotal: rules.minFoodSubtotal, shortBy: rules.minFoodSubtotal - subtotal }, 'The code has not been applied.');
   }
   return null;
 }
@@ -453,11 +466,19 @@ function refreshDiscount(state) {
   const menu = loadMenu();
   const promo = loadPromotions().promotions.find((p) => p.id === state.discount.code);
   const sub = foodSubtotal(state, menu);
-  const problem = !promo || promo.active !== true || !promo.discount ? fail('inactive_code', 'The code is no longer valid.') : sub.error || checkEligibility(promo, sub.subtotal, state.orderType);
+  const problem = !promo || promo.active !== true || !promo.discount ? fail('inactive_code', "Sorry, that promo code isn't valid.", null, 'The code is no longer valid.') : sub.error || checkEligibility(promo, sub.subtotal, state.orderType);
   if (problem) {
     const removed = state.discount;
     state.discount = null;
-    return { discountRemoved: { code: removed.code, reason: problem.error, message: `The ${removed.code} discount no longer applies. ${problem.message}` } };
+    return {
+      discountRemoved: {
+        code: removed.code,
+        reason: problem.error,
+        customerMessage: `Your ${removed.code} discount was removed because your order no longer qualifies for it.`,
+        detail: problem.customerMessage,
+        internalNote: 'Tell the customer the discount was removed.'
+      }
+    };
   }
   const amount = computeDiscount(promo, sub.subtotal);
   const changed = amount !== state.discount.amount || sub.subtotal !== state.discount.foodSubtotal;
@@ -469,7 +490,7 @@ function applyPromotion(args, ctx) {
   const state = ctx.state;
   const orderType = args.orderType === undefined || args.orderType === null ? null : normalize(args.orderType);
   if (orderType !== null && orderType !== 'pickup' && orderType !== 'delivery') {
-    return fail('invalid_order_type', 'The order type must be pickup or delivery.');
+    return fail('invalid_order_type', 'Please tell me if your order is for pickup or delivery.', null, 'The order type must be pickup or delivery. Nothing was changed.');
   }
   let note = null;
   if (orderType && orderType !== state.orderType) {
@@ -481,13 +502,13 @@ function applyPromotion(args, ctx) {
   const promo = code ? loadPromotions().promotions.find((p) => p.id.toUpperCase() === code) : null;
   if (!promo || promo.active !== true || !promo.discount) {
     // Unknown, invented and inactive codes are all refused the same way.
-    return fail('invalid_code', 'That promo code is not valid. Do not accept it and do not guess other codes.', note || {});
+    return fail('invalid_code', "Sorry, that promo code isn't valid.", note || {}, 'Do not accept the code. Do not guess, suggest or list other codes.');
   }
   if (state.discount && state.discount.code !== promo.id) {
-    return fail('code_already_applied', `The code ${state.discount.code} is already applied. Only one promo code can be used per order.`);
+    return fail('code_already_applied', `The code ${state.discount.code} is already on your order, and only one promo code can be used per order.`, null, 'The new code has not been applied.');
   }
   if (state.items.length === 0) {
-    return fail('cart_empty', 'The cart is empty. Add items first, then apply the code.');
+    return fail('cart_empty', 'Your cart is empty. Please add some items first, then I can apply the code.', null, 'The code has not been applied.');
   }
   const sub = foodSubtotal(state, loadMenu());
   if (sub.error) return sub.error;
@@ -505,7 +526,8 @@ function applyPromotion(args, ctx) {
     discountText: `${amount} PKR`,
     foodSubtotalAfterDiscount: sub.subtotal - amount,
     deliveryFeeDiscounted: false,
-    message: 'The discount applies to the food subtotal only. The delivery fee is never discounted.'
+    customerMessage: `Promo code ${promo.id} applied: ${amount} PKR off your food.`,
+    internalNote: 'The discount applies to the food subtotal only. The delivery fee is never discounted.'
   };
 }
 
@@ -515,7 +537,7 @@ const CART_CHANGING_TOOLS = new Set(['addItemToCart', 'modifyItem', 'removeItem'
 function executeTool(name, args, ctx) {
   const handler = Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : null;
   if (!handler) {
-    return { ok: false, error: 'unknown_tool', message: 'That tool does not exist.' };
+    return fail('unknown_tool', "Sorry, I can't do that.", null, 'That tool does not exist. Do not call it again.');
   }
   try {
     const result = handler(args && typeof args === 'object' ? args : {}, ctx);
@@ -526,7 +548,7 @@ function executeTool(name, args, ctx) {
     }
     return result;
   } catch (err) {
-    return { ok: false, error: 'tool_failed', message: 'The tool could not run. Tell the customer to ask staff.' };
+    return fail('tool_failed', 'Sorry, something went wrong. Please try again, or ask our staff.', null, 'The tool could not run.');
   }
 }
 
