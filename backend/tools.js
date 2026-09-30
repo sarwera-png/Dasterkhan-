@@ -38,6 +38,23 @@ const TOOL_DECLARATIONS = [
       },
       required: ['itemId', 'quantity']
     }
+  },
+  {
+    name: 'modifyItem',
+    description:
+      'Change the quantity and/or the option choices of a line that is already in the cart. Use it when the customer says things like "make it 2" or "change the spice to regular". ' +
+      '"quantity" is the NEW total for that line (not an amount to add). Do not use it to add a new item (use addItemToCart) or to remove one (use removeItem).',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        itemId: { type: 'STRING', description: 'Menu item id of the cart line to change, e.g. BRY01' },
+        quantity: { type: 'INTEGER', description: 'The new quantity for the line (1 or more)' },
+        options: OPTIONS_SCHEMA,
+        currentOptions: { ...OPTIONS_SCHEMA, description: 'Only needed when the cart has several lines of the same item with different options: the options of the line to change, so it can be identified.' },
+        lineId: { type: 'STRING', description: 'Optional cart line id (e.g. L1) if known from a previous tool result' }
+      },
+      required: ['itemId']
+    }
   }
 ];
 
@@ -154,7 +171,86 @@ function addItemToCart(args, ctx) {
   return { ok: true, mergedIntoExistingLine: false, line: lineView(line), cartLineCount: cart.length };
 }
 
-const HANDLERS = { getMenu, addItemToCart };
+// Finds the one cart line the customer means. Returns { line } or { error }.
+function findCartLine(cart, args) {
+  if (args.lineId !== undefined && args.lineId !== null && args.lineId !== '') {
+    const byId = cart.find((line) => line.lineId === args.lineId);
+    return byId ? { line: byId } : { error: fail('not_in_cart', 'There is no cart line with that lineId.') };
+  }
+  const key = normalize(args.itemId);
+  let candidates = cart.filter((line) => normalize(line.id) === key || normalize(line.name) === key);
+  if (candidates.length === 0) {
+    return { error: fail('not_in_cart', 'That item is not in the cart. Use addItemToCart to add it.') };
+  }
+  if (candidates.length > 1 && Array.isArray(args.currentOptions)) {
+    const wanted = {};
+    for (const entry of args.currentOptions) {
+      if (entry && typeof entry.name === 'string' && typeof entry.choice === 'string') wanted[normalize(entry.name)] = normalize(entry.choice);
+    }
+    candidates = candidates.filter((line) => Object.entries(wanted).every(([name, choice]) =>
+      Object.entries(line.options).some(([n, c]) => normalize(n) === name && normalize(c) === choice)));
+  }
+  if (candidates.length > 1) {
+    return { error: fail('ambiguous_line', 'The cart has several lines of this item with different options. Ask the customer which one to change.', { lines: candidates.map(lineView) }) };
+  }
+  if (candidates.length === 0) {
+    return { error: fail('not_in_cart', 'No cart line of that item has those options.') };
+  }
+  return { line: candidates[0] };
+}
+
+function modifyItem(args, ctx) {
+  const cart = ctx.state.items;
+  const found = findCartLine(cart, args);
+  if (found.error) return found.error;
+  const line = found.line;
+
+  const quantityGiven = args.quantity !== undefined && args.quantity !== null;
+  const optionsGiven = Array.isArray(args.options) && args.options.length > 0;
+  if (!quantityGiven && !optionsGiven) {
+    return fail('nothing_to_change', 'Say what to change: a new quantity and/or new option choices.');
+  }
+
+  const { item, error } = validateItem(loadMenu(), line.id);
+  if (error) return error;
+
+  let newQuantity = line.quantity;
+  if (quantityGiven) {
+    const quantityError = validateQuantity(args.quantity);
+    if (quantityError) return quantityError;
+    newQuantity = args.quantity;
+  }
+
+  let newOptions = line.options;
+  if (optionsGiven) {
+    // Keep the options that were not mentioned, replace the ones that were, then validate the whole set.
+    const combined = Object.entries(line.options).map(([name, choice]) => ({ name, choice }));
+    for (const entry of args.options) {
+      const at = combined.findIndex((c) => entry && normalize(c.name) === normalize(entry.name));
+      if (at >= 0) combined[at] = { name: combined[at].name, choice: entry.choice };
+      else combined.push(entry);
+    }
+    const checked = validateOptions(item, combined);
+    if (checked.error) return checked.error;
+    newOptions = checked.options;
+  }
+
+  // If the new options match another line of the same item, merge into that line so there is never a duplicate.
+  const twin = cart.find((other) => other !== line && other.id === line.id && sameOptions(other.options, newOptions));
+  if (twin) {
+    if (twin.quantity + newQuantity > MAX_QUANTITY) {
+      return fail('invalid_quantity', `Merging would make more than ${MAX_QUANTITY} on one line.`);
+    }
+    twin.quantity += newQuantity;
+    cart.splice(cart.indexOf(line), 1);
+    return { ok: true, mergedWithLine: twin.lineId, line: lineView(twin), cartLineCount: cart.length };
+  }
+  line.quantity = newQuantity;
+  line.options = newOptions;
+  return { ok: true, line: lineView(line), cartLineCount: cart.length };
+}
+
+const HANDLERS = { getMenu, addItemToCart, modifyItem };
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
 function executeTool(name, args, ctx) {
