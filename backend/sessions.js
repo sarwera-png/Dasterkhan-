@@ -21,6 +21,7 @@ function newOrderState() {
     addressConfirmed: false, // delivery: the customer clearly said yes to the read-back (reset by ANY change)
     customer: { name: null, phone: null, address: null }, // address (delivery): { block, house, street, apartment, landmark, instructions }
     discount: null,
+    totals: null, // { foodSubtotal, discountAmount, deliveryFee, tax, total } from the pricing function, updated on every change
     total: 0,
     confirmed: false,
     status: 'draft'

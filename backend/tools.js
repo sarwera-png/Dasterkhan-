@@ -1,6 +1,7 @@
 // Tools the assistant can call (Gemini function calling). All validation is done here in code,
 // against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, customerMessage, internalNote }.
-const { loadMenu, loadRecommendations, loadPromotions } = require('./data');
+const { loadMenu, loadRecommendations, loadPromotions, loadRestaurant } = require('./data');
+const { computeTotals, totalsLines, foodSubtotal, checkEligibility, computeDiscount } = require('./pricing');
 const { fail, normalize } = require('./fail');
 const checkout = require('./checkout');
 
@@ -351,16 +352,24 @@ function viewCart(args, ctx) {
   // Order type and applied promotions exactly as stored (amounts were computed by code, never by the model).
   const orderType = state.orderType || null;
   const orderTypeText = orderType || 'not set';
-  const promotions = state.discount
-    ? [{ code: state.discount.code, name: state.discount.name, discountAmount: state.discount.amount, discountText: `${state.discount.amount} PKR` }]
+  // Totals are recomputed here by the pricing function (read-only: nothing is stored), so they are always current.
+  const priced = computeTotals(
+    { items: cart, orderType, promoCode: state.discount ? state.discount.code : null },
+    { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant() }
+  );
+  const totals = priced.ok
+    ? { foodSubtotal: priced.foodSubtotal, discountAmount: priced.discountAmount, deliveryFee: priced.deliveryFee, tax: priced.tax, total: priced.total }
+    : null;
+  const promotions = priced.ok && priced.discount
+    ? [{ code: priced.discount.code, name: priced.discount.name, discountAmount: priced.discount.amount, discountText: `${priced.discount.amount} PKR` }]
     : [];
   const orderTypeLine = `Order type: ${orderType || 'not chosen yet'}`;
   const promoLines = promotions.map((promo) => `Promo code ${promo.code}: ${promo.discountText} off your food`);
   const extras = [orderTypeLine, ...promoLines].join('\n');
 
   if (cart.length === 0) {
-    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', orderType, orderTypeText, promotions,
-      customerMessage: `Your cart is empty.\n${extras}` };
+    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', orderType, orderTypeText, promotions, totals,
+      missingDetails: checkout.missingDetails(state), customerMessage: `Your cart is empty.\n${extras}` };
   }
   return {
     ok: true,
@@ -371,7 +380,9 @@ function viewCart(args, ctx) {
     orderType,
     orderTypeText,
     promotions,
-    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}\n${extras}`
+    totals,
+    missingDetails: checkout.missingDetails(state),
+    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}\n${extras}${priced.ok ? `\n${totalsLines(priced).join('\n')}` : ''}`
   };
 }
 
@@ -434,73 +445,38 @@ function getRecommendations(args, ctx) {
 
 const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType, ...checkout.handlers };
 
-// ---- Promotions (rules live in data/promotions.json; all checks are done here in code) ----
+// ---- Totals and promotions (rules live in data/*.json; the maths is in pricing.js, all checks run in code) ----
 
-// Food subtotal in PKR from the cart and the current menu prices. Delivery fees are never part of it.
-function foodSubtotal(state, menu) {
-  let subtotal = 0;
-  for (const line of state.items) {
-    const item = menu.items.find((i) => i.id === line.id);
-    if (!item || typeof item.price !== 'number') return { error: fail('cart_invalid', 'Sorry, one of the items in your cart is no longer on our menu. Please review your cart.', null, 'Ask the customer to review the cart.') };
-    subtotal += item.price * line.quantity;
-  }
-  return { subtotal };
-}
-
-// Returns null if the order qualifies for the promotion, otherwise an error object.
-function checkEligibility(promo, subtotal, orderType) {
-  const rules = promo.eligibility || {};
-  const restrictsOrderType = Array.isArray(rules.orderTypes) && rules.orderTypes.length > 0
-    && !(rules.orderTypes.includes('pickup') && rules.orderTypes.includes('delivery'));
-  if (restrictsOrderType) {
-    if (!orderType) {
-      return fail('order_type_needed', 'Is this order for pickup or delivery?', null,
-        'The code has NOT been applied. Ask the customer; do not assume or choose for them. After they answer in their own words, call setOrderType, then applyPromotion again.');
-    }
-    if (!rules.orderTypes.includes(orderType)) {
-      return fail('order_type_not_eligible', `Sorry, this code is only for ${rules.orderTypes.join(' or ')} orders.`, null, 'The code has not been applied.');
-    }
-  }
-  if (typeof rules.minFoodSubtotal === 'number' && subtotal < rules.minFoodSubtotal) {
-    return fail('below_minimum', `Sorry, this code needs at least ${rules.minFoodSubtotal} PKR of food. Your food total is ${subtotal} PKR.`,
-      { foodSubtotal: subtotal, minFoodSubtotal: rules.minFoodSubtotal, shortBy: rules.minFoodSubtotal - subtotal }, 'The code has not been applied.');
-  }
-  return null;
-}
-
-// Discount in whole PKR, on the food subtotal only, never more than the subtotal.
-function computeDiscount(promo, subtotal) {
-  const d = promo.discount;
-  let amount = d.type === 'percent' ? Math.floor((subtotal * d.value) / 100) : d.value;
-  if (typeof d.maxAmount === 'number') amount = Math.min(amount, d.maxAmount);
-  return Math.max(0, Math.min(amount, subtotal));
-}
-
-// Re-checks the applied code after the cart or order type changed. Returns a note for the model, or null.
-function refreshDiscount(state) {
-  if (!state.discount) return null;
-  const menu = loadMenu();
-  const promo = loadPromotions().promotions.find((p) => p.id === state.discount.code);
-  const sub = foodSubtotal(state, menu);
-  const problem = !promo || promo.active !== true || !promo.discount ? fail('inactive_code', "Sorry, that promo code isn't valid.", null, 'The code is no longer valid.') : sub.error || checkEligibility(promo, sub.subtotal, state.orderType);
-  if (problem) {
-    const removed = state.discount;
+// Recomputes the totals for this session with the pricing function and stores them. A promo code that no longer
+// qualifies is dropped. Returns a note for the model when the discount was removed or its amount changed, else null.
+function refreshTotals(state) {
+  const totals = computeTotals(
+    { items: state.items, orderType: state.orderType, promoCode: state.discount ? state.discount.code : null },
+    { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant() }
+  );
+  const previous = state.discount;
+  if (!totals.ok) {
+    state.totals = null;
+    state.total = 0;
+    if (!previous) return null;
     state.discount = null;
-    return {
-      discountRemoved: {
-        code: removed.code,
-        reason: problem.error,
-        customerMessage: `Your ${removed.code} discount was removed because your order no longer qualifies for it.`,
-        detail: problem.customerMessage,
-        internalNote: 'Tell the customer the discount was removed.'
-      }
-    };
+    return { discountRemoved: { code: previous.code, reason: totals.error.error, customerMessage: `Your ${previous.code} discount was removed because your order no longer qualifies for it.`, detail: totals.error.customerMessage, internalNote: 'Tell the customer the discount was removed.' } };
   }
-  const amount = computeDiscount(promo, sub.subtotal);
-  const changed = amount !== state.discount.amount || sub.subtotal !== state.discount.foodSubtotal;
-  state.discount = { code: promo.id, name: promo.name, amount, foodSubtotal: sub.subtotal };
-  return changed ? { discountUpdated: { code: promo.id, discountAmount: amount, discountText: `${amount} PKR`, foodSubtotal: sub.subtotal } } : null;
+  state.totals = { foodSubtotal: totals.foodSubtotal, discountAmount: totals.discountAmount, deliveryFee: totals.deliveryFee, tax: totals.tax, total: totals.total };
+  state.total = totals.total === null ? 0 : totals.total;
+  if (totals.promoRemoved) {
+    state.discount = null;
+    return { discountRemoved: totals.promoRemoved };
+  }
+  if (!totals.discount) {
+    state.discount = null;
+    return null;
+  }
+  const changed = !previous || totals.discount.amount !== previous.amount || totals.foodSubtotal !== previous.foodSubtotal;
+  state.discount = { code: totals.discount.code, name: totals.discount.name, amount: totals.discount.amount, foodSubtotal: totals.foodSubtotal };
+  return changed && previous ? { discountUpdated: { code: totals.discount.code, discountAmount: totals.discount.amount, discountText: `${totals.discount.amount} PKR`, foodSubtotal: totals.foodSubtotal } } : null;
 }
+const refreshDiscount = refreshTotals;
 
 function applyPromotion(args, ctx) {
   const state = ctx.state; // the order type is only ever set by setOrderType, never here
@@ -516,13 +492,14 @@ function applyPromotion(args, ctx) {
   if (state.items.length === 0) {
     return fail('cart_empty', 'Your cart is empty. Please add some items first, then I can apply the code.', null, 'The code has not been applied.');
   }
-  const sub = foodSubtotal(state, loadMenu());
+  const sub = foodSubtotal(state.items, loadMenu());
   if (sub.error) return sub.error;
   const problem = checkEligibility(promo, sub.subtotal, state.orderType);
   if (problem) return problem;
 
   const amount = computeDiscount(promo, sub.subtotal);
   state.discount = { code: promo.id, name: promo.name, amount, foodSubtotal: sub.subtotal };
+  refreshTotals(state); // store the totals that include this discount
   return {
     ok: true,
     code: promo.id,
