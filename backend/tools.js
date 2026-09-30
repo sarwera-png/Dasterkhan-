@@ -98,14 +98,27 @@ const TOOL_DECLARATIONS = [
     name: 'applyPromotion',
     description:
       'Apply a promo code that the CUSTOMER gave you. Never make up or suggest codes. The tool checks the code and the order against the real promotion rules and tells you the discount or why it cannot be applied. ' +
-      'Discounts apply to the food subtotal only, never the delivery fee, and only one code per order. Pass orderType (pickup or delivery) once the customer has said which they want.',
+      'Discounts apply to the food subtotal only, never the delivery fee, and only one code per order. ' +
+      'If the code depends on pickup or delivery and the customer has not said which, the tool asks for it: then ask the customer, and only after they answer call setOrderType.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        code: { type: 'STRING', description: 'The promo code exactly as the customer gave it' },
-        orderType: { type: 'STRING', description: 'pickup or delivery, if the customer has said which' }
+        code: { type: 'STRING', description: 'The promo code exactly as the customer gave it' }
       },
       required: ['code']
+    }
+  },
+  {
+    name: 'setOrderType',
+    description:
+      'Record whether the order is for pickup or delivery. Call this ONLY when the customer has explicitly said "pickup" or "delivery" (or clearly the same thing) in their own words. ' +
+      'Never assume, guess or default it, and never call it just so that a promo code can be applied. Calling it re-checks any applied promo code.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        orderType: { type: 'STRING', description: 'Exactly "pickup" or "delivery", as the customer said it' }
+      },
+      required: ['orderType']
     }
   }
 ];
@@ -417,7 +430,7 @@ function getRecommendations(args, ctx) {
   };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion };
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType };
 
 // ---- Promotions (rules live in data/promotions.json; all checks are done here in code) ----
 
@@ -439,7 +452,8 @@ function checkEligibility(promo, subtotal, orderType) {
     && !(rules.orderTypes.includes('pickup') && rules.orderTypes.includes('delivery'));
   if (restrictsOrderType) {
     if (!orderType) {
-      return fail('order_type_needed', 'This code depends on the order type. Is your order for pickup or delivery?', null, 'The code has not been applied yet. Ask; do not assume.');
+      return fail('order_type_needed', 'Is this order for pickup or delivery?', null,
+        'The code has NOT been applied. Ask the customer; do not assume or choose for them. After they answer in their own words, call setOrderType, then applyPromotion again.');
     }
     if (!rules.orderTypes.includes(orderType)) {
       return fail('order_type_not_eligible', `Sorry, this code is only for ${rules.orderTypes.join(' or ')} orders.`, null, 'The code has not been applied.');
@@ -487,22 +501,12 @@ function refreshDiscount(state) {
 }
 
 function applyPromotion(args, ctx) {
-  const state = ctx.state;
-  const orderType = args.orderType === undefined || args.orderType === null ? null : normalize(args.orderType);
-  if (orderType !== null && orderType !== 'pickup' && orderType !== 'delivery') {
-    return fail('invalid_order_type', 'Please tell me if your order is for pickup or delivery.', null, 'The order type must be pickup or delivery. Nothing was changed.');
-  }
-  let note = null;
-  if (orderType && orderType !== state.orderType) {
-    state.orderType = orderType;
-    note = refreshDiscount(state); // a code that needed the old order type may no longer apply
-  }
-
+  const state = ctx.state; // the order type is only ever set by setOrderType, never here
   const code = typeof args.code === 'string' ? args.code.trim().toUpperCase() : '';
   const promo = code ? loadPromotions().promotions.find((p) => p.id.toUpperCase() === code) : null;
   if (!promo || promo.active !== true || !promo.discount) {
     // Unknown, invented and inactive codes are all refused the same way.
-    return fail('invalid_code', "Sorry, that promo code isn't valid.", note || {}, 'Do not accept the code. Do not guess, suggest or list other codes.');
+    return fail('invalid_code', "Sorry, that promo code isn't valid.", null, 'Do not accept the code. Do not guess, suggest or list other codes.');
   }
   if (state.discount && state.discount.code !== promo.id) {
     return fail('code_already_applied', `The code ${state.discount.code} is already on your order, and only one promo code can be used per order.`, null, 'The new code has not been applied.');
@@ -531,6 +535,24 @@ function applyPromotion(args, ctx) {
   };
 }
 
+// Records pickup or delivery exactly as the customer chose it, then re-checks any applied promo code.
+function setOrderType(args, ctx) {
+  const orderType = typeof args.orderType === 'string' ? normalize(args.orderType) : '';
+  if (orderType !== 'pickup' && orderType !== 'delivery') {
+    return fail('invalid_order_type', 'Is this order for pickup or delivery?', null,
+      'The order type must be exactly pickup or delivery, as the customer said it. Nothing was changed. Never guess it.');
+  }
+  const state = ctx.state;
+  const changed = state.orderType !== orderType;
+  state.orderType = orderType;
+  const note = refreshDiscount(state); // e.g. a pickup-only code stops applying when the customer switches to delivery
+  const result = { ok: true, orderType, changed, ...(note || {}) };
+  result.customerMessage = `Got it: this order is for ${orderType}.`;
+  if (note && note.discountRemoved) result.customerMessage += ` ${note.discountRemoved.customerMessage} ${note.discountRemoved.detail}`;
+  if (note && note.discountUpdated) result.customerMessage += ` Your ${note.discountUpdated.code} discount is now ${note.discountUpdated.discountText}.`;
+  return result;
+}
+
 const CART_CHANGING_TOOLS = new Set(['addItemToCart', 'modifyItem', 'removeItem']);
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
@@ -544,7 +566,11 @@ function executeTool(name, args, ctx) {
     // Whenever the cart changes, re-check that an applied promo code is still valid and update the amount.
     if (result && result.ok && CART_CHANGING_TOOLS.has(name)) {
       const note = refreshDiscount(ctx.state);
-      if (note) Object.assign(result, note);
+      if (note) {
+        Object.assign(result, note);
+        if (note.discountRemoved) result.customerMessage += ` ${note.discountRemoved.customerMessage} ${note.discountRemoved.detail}`;
+        if (note.discountUpdated) result.customerMessage += ` Your ${note.discountUpdated.code} discount is now ${note.discountUpdated.discountText}.`;
+      }
     }
     return result;
   } catch (err) {
