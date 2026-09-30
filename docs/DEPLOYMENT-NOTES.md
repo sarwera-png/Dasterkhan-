@@ -1,13 +1,30 @@
 # Deployment notes (Vercel) - for the owner to decide later
 
-Notes only. Nothing here has been done: no deployment, no Vercel config, no code change. This is a fictional training restaurant, so the live site should stay a demo.
+The code is now **prepared** for Vercel (section 0), but **nothing has been deployed, linked or connected**. The owner decides if and when. This is a fictional training restaurant, so the live site should stay a demo.
 
-## 1. What must change to run on Vercel
+## 0. Import steps (Vercel, demo only)
+
+What is already in the repo: `api/index.js` (thin entry that exports the same Express app), `vercel.json` (sends every URL to that function, bundles `backend`, `data`, `frontend`, `prompts`, 60 s limit). `npm start` on the laptop is unchanged: the server only skips `listen` when Vercel sets `VERCEL`.
+
+1. In Vercel: **Add New... > Project > Import Project**, pick the GitHub repository and the branch to deploy. Framework preset **Other**. Leave Build Command, Output Directory and Install Command at their defaults (no build step).
+2. Project Settings > General > **Node.js Version: 22.x**.
+3. Project Settings > **Environment Variables** (names only here, enter the values in Vercel, never in the repo):
+   - `GEMINI_API_KEY` (required for the chat)
+   - `GEMINI_FALLBACK_MODELS` (optional)
+   - `GEMINI_COOLDOWN_SECONDS` (optional, default 60)
+   - Do **not** set `ORDERS_ENABLED` (ordering stays off: the public demo takes no orders).
+   - Do **not** set `STAFF_PASSWORD` (the staff dashboard stays locked with 403).
+4. Deploy, open the URL, check: website loads, chat answers, no "Confirm order" button, `/staff` shows 403.
+5. The 60 s function limit (`maxDuration`) is the highest the free plan allows; the app's own 80 s deadline can be cut short by the platform.
+
+Known limits of the demo on Vercel: chat sessions and carts live in one instance's memory, so a cart can disappear between messages when Vercel uses another instance (a shared session store is needed to fix this). Rate limiting and the model cooldown are also per instance. Orders cannot be saved at all (section 2).
+
+## 1. What must change to run on Vercel (status)
 
 The app is one long-running Express server (`backend/server.js` calls `app.listen`). Vercel runs code as short-lived serverless functions, so it does not fit as is:
 
-- **Express as a function:** the app would need to be exported as a handler (for example an `api/` entry that re-exports the Express app) instead of calling `listen`, and routes (`/api/chat`, `/api/order/confirm`, `/staff`, `/api/staff/*`) mapped to it in a Vercel config file.
-- **Static frontend:** `frontend/` (and `backend/staff/*`, which the server streams from disk) would be served as static files or included in the function bundle; the `express.static` setup would change.
+- **Express as a function (DONE, see section 0):** the app would need to be exported as a handler (for example an `api/` entry that re-exports the Express app) instead of calling `listen`, and routes (`/api/chat`, `/api/order/confirm`, `/staff`, `/api/staff/*`) mapped to it in a Vercel config file.
+- **Static frontend (DONE: served by the same function, bundled via `includeFiles`):** `frontend/` (and `backend/staff/*`, which the server streams from disk) would be served as static files or included in the function bundle; the `express.static` setup would change.
 - **In-memory chat sessions are lost:** sessions, carts and the review/confirm state live in the server's memory. Serverless instances are created and dropped at any time and several run side by side, so a customer's next message can land on an instance that has never seen their cart. Sessions need an external store (a database or key-value store) before any real use.
 - **Non-persistent file writes:** `data/orders.json` is written at runtime. On Vercel the file system is read-only or temporary and is not shared between instances, so orders would silently disappear or differ per instance. A real database is required.
 - **Timeouts:** one chat request may try up to three models (20 s each, 80 s total). Function time limits on the chosen plan must allow this, or the limits need revisiting.
@@ -28,6 +45,7 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 | `STAFF_PASSWORD` | the staff dashboard (without it `/staff` is locked with HTTP 403) |
 | `ORDERS_ENABLED` | leave **unset** on the public site (section 2) |
 | `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS` | optional; defaults are in `.env.example` |
+| `GEMINI_COOLDOWN_SECONDS` | optional; seconds to skip a model after 429/503 (default 60, max 300, 0 = off) |
 | `PORT` | not used on Vercel; used when running as a normal server |
 
 Set them in the hosting provider's environment settings, never in a committed file.
