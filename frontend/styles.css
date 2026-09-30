@@ -408,3 +408,30 @@ h3 { margin: 0 0 0.1rem; font-size: 1.15rem; line-height: 1.3; }
   src: local("Segoe UI"), local("Tahoma"), local("Arial"), local("Roboto"), local("Helvetica Neue"), local("Helvetica");
   unicode-range: U+0000-024F;
 }
+
+/* Confirm order button: only shown while the server says a review is valid */
+.chat-confirm {
+  padding: 0.5rem 0.6rem;
+  background: var(--warm-white-alt);
+  border-top: 1px solid #e4dcc8;
+}
+.chat-confirm[hidden] { display: none; }
+.chat-confirm-btn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.45rem 1rem;
+  border: 2px solid var(--charcoal-deep);
+  border-radius: 999px;
+  background: var(--gold);
+  color: var(--charcoal-deep);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.chat-confirm-btn .ur { font-weight: 400; }
+.chat-confirm-btn:hover,
+.chat-confirm-btn:focus-visible { background: var(--gold-soft); }
+.chat-confirm-btn:disabled { opacity: 0.6; cursor: not-allowed; }

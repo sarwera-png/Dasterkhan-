@@ -20,6 +20,7 @@ function newOrderState() {
     addressReadBack: false, // delivery: the code has read the captured details back to the customer
     addressConfirmed: false, // delivery: the customer clearly said yes to the read-back (reset by ANY change)
     reviewShownVersion: null, // reviewVersion of the last order review shown to the customer
+    confirmedVersion: null, // reviewVersion that the customer confirmed with the button
     customer: { name: null, phone: null, address: null }, // address (delivery): { block, house, street, apartment, landmark, instructions }
     discount: null,
     totals: null, // { foodSubtotal, discountAmount, deliveryFee, tax, total } from the pricing function, updated on every change
@@ -60,4 +61,14 @@ function getOrCreateSession(sessionId) {
   return { sessionId: id, state };
 }
 
-module.exports = { getOrCreateSession };
+// Looks up an existing session WITHOUT creating one (used by the confirm endpoint). Returns { sessionId, state } or null.
+function getExistingSession(sessionId) {
+  if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return null;
+  const entry = sessions.get(sessionId);
+  const now = Date.now();
+  if (!entry || now - entry.lastSeen > SESSION_TTL_MS) return null;
+  entry.lastSeen = now;
+  return { sessionId, state: entry.state };
+}
+
+module.exports = { getOrCreateSession, getExistingSession };

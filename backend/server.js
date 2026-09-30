@@ -2,8 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
-const { getOrCreateSession } = require('./sessions');
-const { loadMenu } = require('./data');
+const { getOrCreateSession, getExistingSession } = require('./sessions');
+const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
+const { buildReview } = require('./review');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
@@ -22,6 +23,7 @@ const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
 const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
+const CONFIRM_NOT_SAVED_MESSAGE = 'Your confirmation was received, but saving orders is not switched on yet, so the restaurant has NOT received this order. Please contact the restaurant.';
 const TOOL_LIMIT_REPLY = "Sorry, I couldn't finish that in one go. Please try again with one simple request, or contact staff.";
 
 // Ordered model chain: primary first, then fallbacks. Entries are trimmed; empty ones and duplicates are skipped.
@@ -137,6 +139,22 @@ function contentsForModel(contents, model) {
 // Statuses that mean the request or key is wrong: trying another model will not help.
 const STOP_STATUSES = new Set([400, 401, 403]);
 
+function reviewData() {
+  return { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant() };
+}
+
+// The review the customer is looking at right now, if it is still valid: shown to them and the order unchanged since.
+// The "Confirm order" button is only offered while this is set. Returns null otherwise.
+function validReviewVersion(state) {
+  try {
+    if (state.status !== 'draft' || !state.reviewShownVersion) return null;
+    const built = buildReview(state, reviewData());
+    return built.ok && built.review.reviewVersion === state.reviewShownVersion ? built.review.reviewVersion : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 app.post('/api/chat', async (req, res) => {
   const { message, conversationHistory, sessionId: requestedSessionId } = req.body || {};
 
@@ -156,14 +174,16 @@ app.post('/api/chat', async (req, res) => {
   }
 
   // Each chat session has its own separate in-memory order state (not used by the model yet).
-  const { sessionId } = getOrCreateSession(requestedSessionId);
+  const { sessionId, state: sessionState } = getOrCreateSession(requestedSessionId);
+  // Sent with every reply: the session id and the review version the "Confirm order" button may use (null = no button).
+  const extras = () => ({ sessionId, reviewVersion: validReviewVersion(sessionState) });
 
   if (!ai) {
     console.error('Chat unavailable: GEMINI_API_KEY is not set');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY,
-      sessionId
+      ...extras()
     });
   }
 
@@ -175,7 +195,7 @@ app.post('/api/chat', async (req, res) => {
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY,
-      sessionId
+      ...extras()
     });
   }
 
@@ -186,7 +206,7 @@ app.post('/api/chat', async (req, res) => {
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
       reply: FALLBACK_REPLY,
-      sessionId
+      ...extras()
     });
   }
 
@@ -233,7 +253,7 @@ app.post('/api/chat', async (req, res) => {
         return res.status(502).json({
           error: 'The assistant could not answer right now.',
           reply: FALLBACK_REPLY,
-          sessionId
+          ...extras()
         });
       }
       // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
@@ -245,19 +265,19 @@ app.post('/api/chat', async (req, res) => {
       return res.status(503).json({
         error: 'The assistant is busy right now.',
         reply: BUSY_REPLY,
-        sessionId
+        ...extras()
       });
     }
 
     const calls = response.functionCalls;
     if (!Array.isArray(calls) || calls.length === 0) {
       console.log(`Gemini answered: model=${usedModel}`);
-      return res.json({ reply: response.text.trim(), sessionId });
+      return res.json({ reply: response.text.trim(), ...extras() });
     }
 
     if (toolRounds >= MAX_TOOL_ROUNDS) {
       console.error('Gemini: tool-call limit reached');
-      return res.json({ reply: TOOL_LIMIT_REPLY, sessionId });
+      return res.json({ reply: TOOL_LIMIT_REPLY, ...extras() });
     }
     toolRounds += 1;
     console.log(`Tool round ${toolRounds}: ${calls.map((c) => c.name).join(', ')}`);
@@ -279,6 +299,49 @@ app.post('/api/chat', async (req, res) => {
       })
     });
   }
+});
+
+// The customer presses the "Confirm order" button: the ONLY way an order is confirmed. Chat text never does it.
+// The server accepts it only if the reviewVersion is exactly the current one and that review was shown to the customer.
+app.post('/api/order/confirm', (req, res) => {
+  const { sessionId, reviewVersion } = req.body || {};
+  const reject = (status, error, customerMessage) => {
+    console.error(`Order confirm: rejected (${error.toUpperCase()})`);
+    return res.status(status).json({ ok: false, error, customerMessage });
+  };
+  if (typeof sessionId !== 'string' || typeof reviewVersion !== 'string' || !/^[0-9a-f]{16}$/.test(reviewVersion)) {
+    return reject(400, 'bad_request', 'Sorry, something went wrong. Please try again.');
+  }
+  const session = getExistingSession(sessionId);
+  if (!session) return reject(404, 'session_not_found', "Sorry, I couldn't find your order. Please start again in the chat.");
+  const state = session.state;
+
+  if (state.status !== 'draft') {
+    if (state.confirmedVersion === reviewVersion) {
+      return res.json({ ok: true, confirmed: true, saved: false, customerMessage: CONFIRM_NOT_SAVED_MESSAGE });
+    }
+    return reject(409, 'order_locked', 'This order has already been confirmed and cannot be changed here.');
+  }
+
+  let built;
+  try {
+    built = buildReview(state, reviewData());
+  } catch (err) {
+    return reject(500, 'server_error', 'Sorry, something went wrong. Please try again.');
+  }
+  if (!built.ok) return reject(409, 'review_not_ready', 'Your order is not ready to confirm yet. Please finish the details in the chat.');
+  if (built.review.reviewVersion !== reviewVersion) {
+    return reject(409, 'review_outdated', 'Your order changed after the review. Please ask for the review again and check it before confirming.');
+  }
+  if (state.reviewShownVersion !== reviewVersion) {
+    return reject(409, 'review_not_shown', 'Please review your order in the chat before confirming it.');
+  }
+
+  state.confirmed = true;
+  state.status = 'confirmed';
+  state.confirmedVersion = reviewVersion;
+  console.log('Order confirm: accepted');
+  return res.json({ ok: true, confirmed: true, saved: false, customerMessage: CONFIRM_NOT_SAVED_MESSAGE });
 });
 
 // Error handling: bad JSON gets a 400, anything else a generic 500 (nothing sensitive is logged or returned).

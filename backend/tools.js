@@ -567,6 +567,9 @@ function setOrderType(args, ctx) {
   return result;
 }
 
+// After the customer has confirmed the order with the button, the order is locked: nothing can be changed from the chat.
+const LOCKED_AFTER_CONFIRM = new Set(['addItemToCart', 'modifyItem', 'removeItem', 'applyPromotion', 'setOrderType', 'setCustomerDetails', 'readBackAddress', 'confirmAddress', 'getOrderReview']);
+
 const CART_CHANGING_TOOLS = new Set(['addItemToCart', 'modifyItem', 'removeItem']);
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
@@ -574,6 +577,10 @@ function executeTool(name, args, ctx) {
   const handler = Object.prototype.hasOwnProperty.call(HANDLERS, name) ? HANDLERS[name] : null;
   if (!handler) {
     return fail('unknown_tool', "Sorry, I can't do that.", null, 'That tool does not exist. Do not call it again.');
+  }
+  if (ctx && ctx.state && ctx.state.status !== 'draft' && LOCKED_AFTER_CONFIRM.has(name)) {
+    return fail('order_locked', "Your order has already been confirmed, so it can't be changed here. If you need to change something, please contact the restaurant.", null,
+      'Do not try to change the order. Tell the customer using the customerMessage only.');
   }
   try {
     const result = handler(args && typeof args === 'object' ? args : {}, ctx);

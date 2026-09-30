@@ -12,10 +12,14 @@
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
   var sendBtn = form.querySelector('.chat-send');
+  var confirmBox = document.getElementById('chat-confirm');
+  var confirmBtn = document.getElementById('chat-confirm-btn');
 
   var history = []; // [{ role: 'user' | 'assistant', content: '...' }]
   var sessionId = null; // chat session id from the server, kept in memory only
+  var reviewVersion = null; // set by the server only while an order review is shown and still valid
   var busy = false;
+  var confirming = false;
 
   function setOpen(open) {
     win.classList.toggle('open', open);
@@ -48,10 +52,17 @@
       .trim();
   }
 
+  // The "Confirm order" button is shown only while the server says the review the customer saw is still valid.
+  function updateConfirmButton() {
+    var show = !!reviewVersion && !busy && !confirming;
+    confirmBox.hidden = !show;
+  }
+
   function setBusy(value) {
     busy = value;
     input.disabled = value;
     sendBtn.disabled = value;
+    updateConfirmButton();
   }
 
   // Returns { ok, reply }. Never throws and never exposes raw error details.
@@ -76,12 +87,15 @@
         if (data && typeof data.sessionId === 'string') {
           sessionId = data.sessionId;
         }
+        // Any reply without a valid review (or a failed request) hides the button: the old review no longer counts.
+        reviewVersion = data && typeof data.reviewVersion === 'string' ? data.reviewVersion : null;
         if (data && typeof data.reply === 'string' && data.reply.trim() !== '') {
           return { ok: result.res.ok, reply: data.reply };
         }
         return { ok: false, reply: GENERIC_ERROR };
       })
       .catch(function () {
+        reviewVersion = null;
         return { ok: false, reply: GENERIC_ERROR };
       })
       .then(function (outcome) {
@@ -121,10 +135,52 @@
         history.push({ role: 'user', content: text });
         history.push({ role: 'assistant', content: replyText });
       }
-      setBusy(false);
+      setBusy(false); // also shows or hides the Confirm button
       if (win.classList.contains('open')) {
         input.focus();
       }
     });
+  });
+
+  // Pressing the button is the only way to confirm an order. Typing in the chat never confirms anything.
+  confirmBtn.addEventListener('click', function () {
+    if (!reviewVersion || confirming || busy) {
+      return;
+    }
+    confirming = true;
+    confirmBtn.disabled = true;
+    var versionToConfirm = reviewVersion;
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, 30000);
+
+    fetch('/api/order/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionId, reviewVersion: versionToConfirm }),
+      signal: controller.signal
+    })
+      .then(function (res) {
+        return res.json().then(
+          function (data) { return { res: res, data: data }; },
+          function () { return { res: res, data: null }; }
+        );
+      })
+      .then(function (result) {
+        var data = result.data;
+        var text = data && typeof data.customerMessage === 'string' && data.customerMessage.trim() !== '' ? data.customerMessage : GENERIC_ERROR;
+        // The wording always comes from the server: it only talks about a saved order when it has a saved order number.
+        addMessage(text, 'bot');
+        reviewVersion = null; // the button disappears after an answer; a new review brings it back
+      })
+      .catch(function () {
+        addMessage(GENERIC_ERROR, 'bot');
+        reviewVersion = null;
+      })
+      .then(function () {
+        clearTimeout(timer);
+        confirming = false;
+        confirmBtn.disabled = false;
+        updateConfirmButton();
+      });
   });
 })();
