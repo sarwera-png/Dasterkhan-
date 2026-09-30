@@ -1,6 +1,6 @@
 // Tools the assistant can call (Gemini function calling). All validation is done here in code,
 // against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, message }.
-const { loadMenu, loadRecommendations } = require('./data');
+const { loadMenu, loadRecommendations, loadPromotions } = require('./data');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
 
@@ -92,6 +92,20 @@ const TOOL_DECLARATIONS = [
           items: { type: 'STRING' }
         }
       }
+    }
+  },
+  {
+    name: 'applyPromotion',
+    description:
+      'Apply a promo code that the CUSTOMER gave you. Never make up or suggest codes. The tool checks the code and the order against the real promotion rules and tells you the discount or why it cannot be applied. ' +
+      'Discounts apply to the food subtotal only, never the delivery fee, and only one code per order. Pass orderType (pickup or delivery) once the customer has said which they want.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        code: { type: 'STRING', description: 'The promo code exactly as the customer gave it' },
+        orderType: { type: 'STRING', description: 'pickup or delivery, if the customer has said which' }
+      },
+      required: ['code']
     }
   }
 ];
@@ -390,7 +404,112 @@ function getRecommendations(args, ctx) {
   };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations };
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion };
+
+// ---- Promotions (rules live in data/promotions.json; all checks are done here in code) ----
+
+// Food subtotal in PKR from the cart and the current menu prices. Delivery fees are never part of it.
+function foodSubtotal(state, menu) {
+  let subtotal = 0;
+  for (const line of state.items) {
+    const item = menu.items.find((i) => i.id === line.id);
+    if (!item || typeof item.price !== 'number') return { error: fail('cart_invalid', 'An item in the cart is no longer on the menu. Ask the customer to review the cart.') };
+    subtotal += item.price * line.quantity;
+  }
+  return { subtotal };
+}
+
+// Returns null if the order qualifies for the promotion, otherwise an error object.
+function checkEligibility(promo, subtotal, orderType) {
+  const rules = promo.eligibility || {};
+  const restrictsOrderType = Array.isArray(rules.orderTypes) && rules.orderTypes.length > 0
+    && !(rules.orderTypes.includes('pickup') && rules.orderTypes.includes('delivery'));
+  if (restrictsOrderType) {
+    if (!orderType) {
+      return fail('order_type_needed', `This code depends on the order type. Ask the customer whether the order is for ${rules.orderTypes.join(' or ')}.`);
+    }
+    if (!rules.orderTypes.includes(orderType)) {
+      return fail('order_type_not_eligible', `This code is only for ${rules.orderTypes.join(' or ')} orders.`);
+    }
+  }
+  if (typeof rules.minFoodSubtotal === 'number' && subtotal < rules.minFoodSubtotal) {
+    return fail('below_minimum', `This code needs a food subtotal of at least ${rules.minFoodSubtotal} PKR. The cart's food subtotal is ${subtotal} PKR.`,
+      { foodSubtotal: subtotal, minFoodSubtotal: rules.minFoodSubtotal, shortBy: rules.minFoodSubtotal - subtotal });
+  }
+  return null;
+}
+
+// Discount in whole PKR, on the food subtotal only, never more than the subtotal.
+function computeDiscount(promo, subtotal) {
+  const d = promo.discount;
+  let amount = d.type === 'percent' ? Math.floor((subtotal * d.value) / 100) : d.value;
+  if (typeof d.maxAmount === 'number') amount = Math.min(amount, d.maxAmount);
+  return Math.max(0, Math.min(amount, subtotal));
+}
+
+// Re-checks the applied code after the cart or order type changed. Returns a note for the model, or null.
+function refreshDiscount(state) {
+  if (!state.discount) return null;
+  const menu = loadMenu();
+  const promo = loadPromotions().promotions.find((p) => p.id === state.discount.code);
+  const sub = foodSubtotal(state, menu);
+  const problem = !promo || promo.active !== true || !promo.discount ? fail('inactive_code', 'The code is no longer valid.') : sub.error || checkEligibility(promo, sub.subtotal, state.orderType);
+  if (problem) {
+    const removed = state.discount;
+    state.discount = null;
+    return { discountRemoved: { code: removed.code, reason: problem.error, message: `The ${removed.code} discount no longer applies. ${problem.message}` } };
+  }
+  const amount = computeDiscount(promo, sub.subtotal);
+  const changed = amount !== state.discount.amount || sub.subtotal !== state.discount.foodSubtotal;
+  state.discount = { code: promo.id, name: promo.name, amount, foodSubtotal: sub.subtotal };
+  return changed ? { discountUpdated: { code: promo.id, discountAmount: amount, discountText: `${amount} PKR`, foodSubtotal: sub.subtotal } } : null;
+}
+
+function applyPromotion(args, ctx) {
+  const state = ctx.state;
+  const orderType = args.orderType === undefined || args.orderType === null ? null : normalize(args.orderType);
+  if (orderType !== null && orderType !== 'pickup' && orderType !== 'delivery') {
+    return fail('invalid_order_type', 'The order type must be pickup or delivery.');
+  }
+  let note = null;
+  if (orderType && orderType !== state.orderType) {
+    state.orderType = orderType;
+    note = refreshDiscount(state); // a code that needed the old order type may no longer apply
+  }
+
+  const code = typeof args.code === 'string' ? args.code.trim().toUpperCase() : '';
+  const promo = code ? loadPromotions().promotions.find((p) => p.id.toUpperCase() === code) : null;
+  if (!promo || promo.active !== true || !promo.discount) {
+    // Unknown, invented and inactive codes are all refused the same way.
+    return fail('invalid_code', 'That promo code is not valid. Do not accept it and do not guess other codes.', note || {});
+  }
+  if (state.discount && state.discount.code !== promo.id) {
+    return fail('code_already_applied', `The code ${state.discount.code} is already applied. Only one promo code can be used per order.`);
+  }
+  if (state.items.length === 0) {
+    return fail('cart_empty', 'The cart is empty. Add items first, then apply the code.');
+  }
+  const sub = foodSubtotal(state, loadMenu());
+  if (sub.error) return sub.error;
+  const problem = checkEligibility(promo, sub.subtotal, state.orderType);
+  if (problem) return problem;
+
+  const amount = computeDiscount(promo, sub.subtotal);
+  state.discount = { code: promo.id, name: promo.name, amount, foodSubtotal: sub.subtotal };
+  return {
+    ok: true,
+    code: promo.id,
+    name: promo.name,
+    foodSubtotal: sub.subtotal,
+    discountAmount: amount,
+    discountText: `${amount} PKR`,
+    foodSubtotalAfterDiscount: sub.subtotal - amount,
+    deliveryFeeDiscounted: false,
+    message: 'The discount applies to the food subtotal only. The delivery fee is never discounted.'
+  };
+}
+
+const CART_CHANGING_TOOLS = new Set(['addItemToCart', 'modifyItem', 'removeItem']);
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
 function executeTool(name, args, ctx) {
@@ -399,7 +518,13 @@ function executeTool(name, args, ctx) {
     return { ok: false, error: 'unknown_tool', message: 'That tool does not exist.' };
   }
   try {
-    return handler(args && typeof args === 'object' ? args : {}, ctx);
+    const result = handler(args && typeof args === 'object' ? args : {}, ctx);
+    // Whenever the cart changes, re-check that an applied promo code is still valid and update the amount.
+    if (result && result.ok && CART_CHANGING_TOOLS.has(name)) {
+      const note = refreshDiscount(ctx.state);
+      if (note) Object.assign(result, note);
+    }
+    return result;
   } catch (err) {
     return { ok: false, error: 'tool_failed', message: 'The tool could not run. Tell the customer to ask staff.' };
   }

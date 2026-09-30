@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
+const PROMOTIONS_PATH = path.join(__dirname, '..', 'data', 'promotions.json');
 const RECOMMENDATIONS_PATH = path.join(__dirname, '..', 'data', 'recommendations.json');
 
 function loadMenu() {
@@ -27,4 +28,12 @@ function loadRecommendations() {
   };
 }
 
-module.exports = { loadMenu, loadRecommendations };
+function loadPromotions() {
+  const data = JSON.parse(fs.readFileSync(PROMOTIONS_PATH, 'utf8'));
+  if (!data || !Array.isArray(data.promotions)) {
+    throw new Error('invalid promotions');
+  }
+  return data;
+}
+
+module.exports = { loadMenu, loadRecommendations, loadPromotions };
