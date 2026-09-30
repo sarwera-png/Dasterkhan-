@@ -13,12 +13,13 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ORDERS_PATH = path.join(__dirname, '..', 'data', 'orders.json');
+let ordersPath = ORDERS_PATH; // only ever changed by the automated tests (see setOrdersPathForTests)
 const FIRST_ORDER_NUMBER = 1001;
 
 function readOrders() {
   let text;
   try {
-    text = fs.readFileSync(ORDERS_PATH, 'utf8');
+    text = fs.readFileSync(ordersPath, 'utf8');
   } catch (err) {
     if (err && err.code === 'ENOENT') return []; // no file yet: no orders yet
     throw err;
@@ -31,7 +32,7 @@ function readOrders() {
 // Safe write: write a temporary file next to the real one, flush it to disk, then rename it over the real file.
 // A crash or an error halfway never leaves a half-written orders.json.
 function writeOrders(orders) {
-  const tmp = `${ORDERS_PATH}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  const tmp = `${ordersPath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
   try {
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {
@@ -40,7 +41,7 @@ function writeOrders(orders) {
     } finally {
       fs.closeSync(fd);
     }
-    fs.renameSync(tmp, ORDERS_PATH);
+    fs.renameSync(tmp, ordersPath);
   } catch (err) {
     try {
       fs.unlinkSync(tmp);
@@ -98,4 +99,10 @@ function advanceOrderStatus(id, newStatus) {
   return { order };
 }
 
-module.exports = { saveConfirmedOrder, advanceOrderStatus, readOrders, STATUS_FLOW, ORDERS_PATH };
+// Lets the automated tests use a temporary file instead of the real data/orders.json. Refuses to run outside tests.
+function setOrdersPathForTests(file) {
+  if (process.env.NODE_ENV !== 'test') throw new Error('setOrdersPathForTests is only available when NODE_ENV=test');
+  ordersPath = file === null ? ORDERS_PATH : file;
+}
+
+module.exports = { saveConfirmedOrder, advanceOrderStatus, readOrders, STATUS_FLOW, ORDERS_PATH, setOrdersPathForTests };
