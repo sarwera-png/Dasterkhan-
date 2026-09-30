@@ -357,6 +357,7 @@ function describeLine(line) {
 function viewCart(args, ctx) {
   const state = ctx.state;
   const cart = state.items;
+  const savedOrderNote = state.orderId ? `Order ${state.orderId} is confirmed and was sent to the restaurant.\n` : '';
   // Order type and applied promotions exactly as stored (amounts were computed by code, never by the model).
   const orderType = state.orderType || null;
   const orderTypeText = orderType || 'not set';
@@ -377,7 +378,7 @@ function viewCart(args, ctx) {
 
   if (cart.length === 0) {
     return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', orderType, orderTypeText, promotions, totals,
-      missingDetails: checkout.missingDetails(state), customerMessage: `Your cart is empty.\n${extras}` };
+      missingDetails: checkout.missingDetails(state), ...(state.orderId ? { orderId: state.orderId } : {}), customerMessage: `${savedOrderNote}Your cart is empty.\n${extras}` };
   }
   return {
     ok: true,
@@ -390,7 +391,8 @@ function viewCart(args, ctx) {
     promotions,
     totals,
     missingDetails: checkout.missingDetails(state),
-    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}\n${extras}${priced.ok ? `\n${totalsLines(priced).join('\n')}` : ''}`
+    ...(state.orderId ? { orderId: state.orderId } : {}),
+    customerMessage: `${savedOrderNote}Your cart:\n${cart.map(describeLine).join('\n')}\n${extras}${priced.ok ? `\n${totalsLines(priced).join('\n')}` : ''}`
   };
 }
 

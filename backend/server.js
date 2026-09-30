@@ -5,6 +5,7 @@ const { GoogleGenAI } = require('@google/genai');
 const { getOrCreateSession, getExistingSession } = require('./sessions');
 const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
+const { saveConfirmedOrder } = require('./orders');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
@@ -23,7 +24,15 @@ const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
 const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
-const CONFIRM_NOT_SAVED_MESSAGE = 'Your confirmation was received, but saving orders is not switched on yet, so the restaurant has NOT received this order. Please contact the restaurant.';
+const SAVE_FAILED_MESSAGE = 'Sorry, we could not save your order, so it has NOT been placed. Please try again, or contact the restaurant.';
+
+// The receipt is written only from a saved order: it always contains the saved order number.
+function receiptMessage(order) {
+  const isDelivery = order.review.orderType === 'delivery';
+  const en = `Your order ${order.id} is confirmed and has been sent to the restaurant. Payment: cash on ${isDelivery ? 'delivery' : 'pickup'}. Thank you!`;
+  const ur = `آپ کا آرڈر ${order.id} کنفرم ہو گیا ہے اور ریسٹورنٹ کو بھیج دیا گیا ہے۔ ادائیگی: ${isDelivery ? 'ڈیلیوری' : 'پک اپ'} پر نقد۔ شکریہ!`;
+  return `${en}\n${ur}`;
+}
 const TOOL_LIMIT_REPLY = "Sorry, I couldn't finish that in one go. Please try again with one simple request, or contact staff.";
 
 // Ordered model chain: primary first, then fallbacks. Entries are trimmed; empty ones and duplicates are skipped.
@@ -317,8 +326,9 @@ app.post('/api/order/confirm', (req, res) => {
   const state = session.state;
 
   if (state.status !== 'draft') {
-    if (state.confirmedVersion === reviewVersion) {
-      return res.json({ ok: true, confirmed: true, saved: false, customerMessage: CONFIRM_NOT_SAVED_MESSAGE });
+    if (state.confirmedVersion === reviewVersion && state.orderId) {
+      // Pressed twice: the same saved order is reported again, nothing new is written.
+      return res.json({ ok: true, confirmed: true, saved: true, orderId: state.orderId, customerMessage: state.receipt });
     }
     return reject(409, 'order_locked', 'This order has already been confirmed and cannot be changed here.');
   }
@@ -337,11 +347,21 @@ app.post('/api/order/confirm', (req, res) => {
     return reject(409, 'review_not_shown', 'Please review your order in the chat before confirming it.');
   }
 
+  // Save first. Only a saved order counts: if the save fails nothing is confirmed and no receipt is shown.
+  let saved;
+  try {
+    saved = saveConfirmedOrder({ sessionId, reviewVersion, review: built.review });
+  } catch (err) {
+    console.error('Order confirm: save failed');
+    return res.status(500).json({ ok: false, error: 'save_failed', customerMessage: SAVE_FAILED_MESSAGE });
+  }
   state.confirmed = true;
   state.status = 'confirmed';
   state.confirmedVersion = reviewVersion;
-  console.log('Order confirm: accepted');
-  return res.json({ ok: true, confirmed: true, saved: false, customerMessage: CONFIRM_NOT_SAVED_MESSAGE });
+  state.orderId = saved.order.id;
+  state.receipt = receiptMessage(saved.order);
+  console.log(`Order confirm: ${saved.created ? 'saved' : 'already saved'} ${saved.order.id}`);
+  return res.json({ ok: true, confirmed: true, saved: true, orderId: saved.order.id, customerMessage: state.receipt });
 });
 
 // Error handling: bad JSON gets a 400, anything else a generic 500 (nothing sensitive is logged or returned).
