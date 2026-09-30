@@ -28,6 +28,9 @@ function markCooling(model, status, retryAfter, now = Date.now()) {
   if (seconds > 0) until.set(model, now + seconds * 1000);
 }
 
+// A model that just answered is available again: forget its cooldown (also keeps later tool rounds of the same message working).
+function markOk(model) { until.delete(model); }
+
 // Seconds left (rounded up) or 0.
 function secondsLeft(model, now = Date.now()) {
   const t = until.get(model);
@@ -41,4 +44,4 @@ function earliestIfAllCooling(chain, now = Date.now()) {
   return chain.reduce((best, m) => (until.get(m) < until.get(best) ? m : best), chain[0]);
 }
 
-module.exports = { markCooling, secondsLeft, earliestIfAllCooling, retryAfterSeconds, cooldownSeconds, _reset: () => until.clear() };
+module.exports = { markCooling, markOk, secondsLeft, earliestIfAllCooling, retryAfterSeconds, cooldownSeconds, _reset: () => until.clear() };

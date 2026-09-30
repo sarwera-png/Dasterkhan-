@@ -277,6 +277,7 @@ app.post('/api/chat', async (req, res) => {
 
       if (result.response) {
         console.log(`Gemini attempt ${attempts}: model=${model} ok`);
+        cooldown.markOk(model);
         response = result.response;
         usedModel = model;
         break;
