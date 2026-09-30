@@ -3,12 +3,14 @@
 const { ORDERING_DISABLED_MESSAGE } = require('./config');
 
 const URDU_SCRIPT = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
-const SENTENCE_SPLIT = /[.!?\n۔؟]+/;
+const CLAUSE_SPLIT = /[.!?\n۔؟,;:،؛—–]+|\s-\s/;
 
-// A sentence that negates, asks or only describes a condition is not a claim ("orders cannot be placed", "it is placed only when you press...").
-// Kept narrow on purpose: "confirmed and will be ready soon" is still a claim.
-const NEGATION_EN = /\b(?:not|never|cannot|until|unless|if|whether|yet|press|button)\b|n't\b|\bonly (?:when|after|once|if)\b|\b(?:will|can|could|would|should|must) be (?:placed|confirmed|submitted|sent)\b|\bto be (?:placed|confirmed)\b/i;
-const NEGATION_TOKENS = new Set(['نہیں', 'نہ', 'جب', 'تک', 'صرف', 'اگر', 'بٹن', 'پہلے', 'دبائیں', 'nahi', 'nahin', 'nhi', 'jab', 'tak', 'sirf', 'agar', 'button', 'pehle', 'dabayein', 'dabaein']);
+// A clause is exempt ONLY when the claim itself is negated or future ("not placed", "cannot be placed", "has not been sent",
+// "will be placed", "ابھی نہیں", "nahi hua"). Words like "if", "press", "button" or "only" do NOT exempt anything:
+// "Your order is confirmed, press OK" is still a claim. Sentences are also split into clauses (, ; : — -), so a
+// harmless clause cannot hide a claim and a negation in another clause cannot excuse it.
+const NEGATION_EN = /\b(?:not|never|cannot|no longer)\b|n't\b|\b(?:will|would|can|could|should|must) be (?:placed|confirmed|submitted|sent|saved)\b|\bto be (?:placed|confirmed|submitted|sent)\b/i;
+const NEGATION_TOKENS = new Set(['نہیں', 'نہ', 'nahi', 'nahin', 'nhi']);
 
 const CLAIM_EN = [
   /\border\b[^.!?\n]{0,30}\b(?:is|has been|was|got|been|now|is now)\s+(?:confirmed|placed|submitted|saved|sent|received|booked|complete|completed|done|processed|registered)\b/i,
@@ -32,10 +34,10 @@ function tokens(sentence) { return sentence.split(/[\s,،:;"'()]+/).filter(Boole
 
 function claimsOrderPlaced(text) {
   if (typeof text !== 'string') return false;
-  return text.split(SENTENCE_SPLIT).some((sentence) => {
-    if (!sentence.trim()) return false;
-    if (URDU_SCRIPT.test(sentence) ? tokens(sentence).some((t) => NEGATION_TOKENS.has(t)) : (NEGATION_EN.test(sentence) || tokens(sentence).some((t) => NEGATION_TOKENS.has(t.toLowerCase())))) return false;
-    return [...CLAIM_EN, ...CLAIM_UR, ...CLAIM_RU].some((re) => re.test(sentence));
+  return text.split(CLAUSE_SPLIT).some((clause) => {
+    if (!clause.trim()) return false;
+    if (NEGATION_EN.test(clause) || tokens(clause).some((t) => NEGATION_TOKENS.has(t.toLowerCase()))) return false;
+    return [...CLAIM_EN, ...CLAIM_UR, ...CLAIM_RU].some((re) => re.test(clause));
   });
 }
 
