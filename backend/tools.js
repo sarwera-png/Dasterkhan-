@@ -547,6 +547,7 @@ function setOrderType(args, ctx) {
   const state = ctx.state;
   const changed = state.orderType !== orderType;
   state.orderType = orderType;
+  if (changed) checkout.invalidateAddressConfirmation(state); // any order type change needs a fresh address confirmation
   if (changed && orderType === 'delivery') {
     state.pickupTime = null; // a pickup time never applies to delivery
     state.pickupTimeDeclined = false;

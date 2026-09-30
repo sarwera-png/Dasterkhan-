@@ -269,7 +269,7 @@ app.post('/api/chat', async (req, res) => {
       : { role: 'model', parts: calls.map((c) => ({ functionCall: c })) };
     turnAuthors.set(turn, usedModel);
     contents.push(turn);
-    const results = runToolCalls(calls, { state }); // setOrderType first; results stay in the model's call order
+    const results = runToolCalls(calls, { state, latestMessage: message }); // setOrderType first; results stay in the model's call order
     contents.push({
       role: 'user',
       parts: calls.map((call, i) => {

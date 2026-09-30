@@ -2,6 +2,7 @@
 // the model only passes on what the customer said and never fills in or guesses a missing detail.
 const { fail } = require('./fail');
 const { loadRestaurant } = require('./data');
+const { isClearYes } = require('./confirm');
 
 const NAME_PATTERN = /^[\p{L}\p{M}][\p{L}\p{M}\s.'’-]*$/u;
 
@@ -121,6 +122,16 @@ function outsideAreaError(restaurant) {
     'Delivery was refused and nothing was stored for this address. Offer pickup, but do not switch the order type yourself: the customer must choose.');
 }
 
+// Delivery details the customer has to confirm. Any change to them (or to the order type) cancels the confirmation.
+function detailsSnapshot(state) {
+  return JSON.stringify({ t: state.orderType, n: state.customer.name, p: state.customer.phone, a: state.customer.address });
+}
+
+function invalidateAddressConfirmation(state) {
+  state.addressConfirmed = false;
+  state.addressReadBack = false;
+}
+
 // ---- what is still missing ----------------------------------------------------------------------
 
 // Details still needed for this order, asked one short question each. Nothing is ever guessed or filled in.
@@ -192,6 +203,18 @@ const declarations = [
         noExtraAddressDetails: { type: 'BOOLEAN', description: 'true if the customer said they have no apartment/unit or delivery instructions' }
       }
     }
+  },
+  {
+    name: 'readBackAddress',
+    description:
+      'Delivery orders only. Once all delivery details are complete, call this to get the full captured name, phone and address written out by the system. ' +
+      'Show it to the customer exactly as returned and ask them to say yes or tell you what to change. Do this before the order review.'
+  },
+  {
+    name: 'confirmAddress',
+    description:
+      'Call this ONLY when the customer has just clearly said yes to the address you read back. The system checks the customer\'s actual message itself. ' +
+      'If the customer wanted a change, do not call this: use setCustomerDetails and then readBackAddress again. Confirming the address does not place or save an order.'
   }
 ];
 
@@ -202,6 +225,7 @@ function setCustomerDetails(args, ctx) {
       'Nothing was stored. Ask; do not assume. After the customer answers in their own words, call setOrderType.');
   }
   const has = (v) => v !== undefined && v !== null && v !== '';
+  const before = detailsSnapshot(state);
   const restaurant = loadRestaurant();
   const isDelivery = state.orderType === 'delivery';
   const updates = {};
@@ -299,6 +323,8 @@ function setCustomerDetails(args, ctx) {
     Object.assign(state.customer.address, address);
   }
 
+  if (detailsSnapshot(state) !== before) invalidateAddressConfirmation(state); // any change needs a fresh read-back and yes
+
   const missing = missingDetails(state);
   const optional = optionalDetails(state);
   const parts = [];
@@ -319,11 +345,69 @@ function setCustomerDetails(args, ctx) {
     stored: [...Object.keys(updates), ...Object.keys(address)],
     missingDetails: missing,
     optionalDetails: optional,
+    ...(isDelivery ? { addressConfirmed: state.addressConfirmed } : {}),
     customerMessage: parts.join(' '),
     ...(notes.length ? { internalNote: notes.join(' ') } : {})
   };
 }
 
-const handlers = { setCustomerDetails };
+// ---- address read-back and confirmation (delivery) ----------------------------------------------
 
-module.exports = { declarations, handlers, missingDetails, optionalDetails, askText, parseTimeOfDay, formatTime, validateName, validatePhone, parseBlock };
+function addressText(state, restaurant) {
+  const a = state.customer.address;
+  return [`House or flat ${a.house}`, a.street, `Block ${a.block}`, `${restaurant.area}, ${restaurant.city}`].join(', ');
+}
+
+// The code builds the read-back text from the stored data, so the customer always sees exactly what is stored.
+function readBackAddress(args, ctx) {
+  const state = ctx.state;
+  if (state.orderType !== 'delivery') {
+    return fail('not_delivery', 'An address is only needed for delivery orders.', null, 'Nothing to confirm. Do not ask a pickup customer for an address.');
+  }
+  const missing = missingDetails(state);
+  if (missing.length) {
+    return fail('details_incomplete', askText(missing), { missingDetails: missing }, 'The delivery details are not complete yet. Ask only for these, then read the address back.');
+  }
+  const restaurant = loadRestaurant();
+  const a = state.customer.address;
+  const lines = [
+    'Please check your delivery details:',
+    `Name: ${state.customer.name}`,
+    `Phone: ${state.customer.phone}`,
+    `Address: ${addressText(state, restaurant)}`,
+    ...(a.apartment ? [`Apartment or unit: ${a.apartment}`] : []),
+    ...(a.instructions ? [`Delivery instructions: ${a.instructions}`] : []),
+    ...(a.landmark ? [`Landmark: ${a.landmark}`] : []),
+    'Is this correct? Please say yes, or tell me what to change.'
+  ];
+  state.addressReadBack = true;
+  state.addressConfirmed = false;
+  return {
+    ok: true,
+    awaitingConfirmation: true,
+    customerMessage: lines.join('\n'),
+    internalNote: 'Show these details to the customer exactly as written (translate only the labels if needed, never the values). The address is NOT confirmed yet. Do not call confirmAddress until the customer clearly says yes. If they want a change, use setCustomerDetails and then read the address back again.'
+  };
+}
+
+// Stores addressConfirmed = true only after a clear yes. The code checks the customer's actual latest message:
+// what the model claims they said is never used. Confirming the address does not create an order.
+function confirmAddress(args, ctx) {
+  const state = ctx.state;
+  if (state.orderType !== 'delivery') {
+    return fail('not_delivery', 'An address is only needed for delivery orders.', null, 'Nothing to confirm.');
+  }
+  if (!state.addressReadBack) {
+    return fail('address_not_read_back', "Let me read your delivery details back to you first.", null, 'Call readBackAddress first, show the result, and wait for the customer to answer.');
+  }
+  if (!isClearYes(ctx.latestMessage)) {
+    return fail('not_clear_yes', 'Just to be sure: is the address correct? Please say yes, or tell me what to change.', null,
+      'The customer has not clearly said yes. Nothing was confirmed. A message like ok, theek hai, hmm or maybe is not a yes.');
+  }
+  state.addressConfirmed = true;
+  return { ok: true, addressConfirmed: true, orderCreated: false, customerMessage: 'Thank you, your delivery address is confirmed.' };
+}
+
+const handlers = { setCustomerDetails, readBackAddress, confirmAddress };
+
+module.exports = { declarations, handlers, missingDetails, optionalDetails, askText, invalidateAddressConfirmation, detailsSnapshot, parseTimeOfDay, formatTime, validateName, validatePhone, parseBlock };
