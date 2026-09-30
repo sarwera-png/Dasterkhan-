@@ -7,6 +7,7 @@ const work = fs.mkdtempSync(path.join(os.tmpdir(), 'kd-tests-'));
 let nodePath = process.env.NODE_PATH || ''; try { nodePath = [nodePath, execSync('npm root -g', { encoding: 'utf8' }).trim()].filter(Boolean).join(path.delimiter); } catch (e) { /* no global root */ }
 const env = { ...process.env, TMPDIR: work, NODE_PATH: nodePath };
 const real = path.join(ROOT, 'data', 'orders.json'); const realBefore = fs.existsSync(real) ? fs.readFileSync(real) : null;
+const restReal = path.join(ROOT, 'data', 'restaurant.json'); const restBefore = fs.readFileSync(restReal);
 const steps = [];
 for (const f of fs.readdirSync(path.join(__dirname, 'unit')).filter((x) => /^(t\d+|unit\d+)\.js$/.test(x)).sort((a, b) => parseInt(a.replace(/\D/g, ''), 10) - parseInt(b.replace(/\D/g, ''), 10))) steps.push([`unit/${f}`, ['-r', './tests/unit/stub.js', `tests/unit/${f}`]]);
 steps.push(['audit', ['tests/audit/audit.js']], ['journey (browser, 1280 + 360 px)', ['tests/journey/journey.js']]);
@@ -20,6 +21,7 @@ setTimeout(() => {
   server.kill();
   const r = spawnSync('bash', ['tests/regression.sh'], { cwd: ROOT, env, encoding: 'utf8', timeout: 120000 }); report('regression.sh (server basics)', r.status === 0, (r.stdout || '') + (r.stderr || ''));
   const realAfter = fs.existsSync(real) ? fs.readFileSync(real) : null; report('data/orders.json untouched by the tests', (realBefore === null && realAfter === null) || (realBefore && realAfter && Buffer.compare(realBefore, realAfter) === 0), 'orders.json changed');
+  report('data/restaurant.json byte-identical after the whole suite', Buffer.compare(restBefore, fs.readFileSync(restReal)) === 0, 'restaurant.json changed');
   fs.rmSync(work, { recursive: true, force: true });
-  console.log(bad ? `TESTS FAILED: ${bad} of ${steps.length + 5} failed` : `ALL TESTS PASSED (${steps.length + 5})`); process.exit(bad ? 1 : 0);
+  console.log(bad ? `TESTS FAILED: ${bad} of ${steps.length + 6} failed` : `ALL TESTS PASSED (${steps.length + 6})`); process.exit(bad ? 1 : 0);
 }, 1500);

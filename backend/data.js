@@ -4,7 +4,8 @@ const fs = require('fs');
 const path = require('path');
 
 const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
-const RESTAURANT_PATH = path.join(__dirname, '..', 'data', 'restaurant.json');
+const REAL_RESTAURANT_PATH = path.join(__dirname, '..', 'data', 'restaurant.json');
+let restaurantPath = REAL_RESTAURANT_PATH; // only ever changed by the automated tests
 const PROMOTIONS_PATH = path.join(__dirname, '..', 'data', 'promotions.json');
 const RECOMMENDATIONS_PATH = path.join(__dirname, '..', 'data', 'recommendations.json');
 
@@ -39,7 +40,7 @@ function loadPromotions() {
 
 // Opening hours, delivery area and fee, tax rate: the facts code needs to validate orders.
 function loadRestaurant() {
-  const r = JSON.parse(fs.readFileSync(RESTAURANT_PATH, 'utf8'));
+  const r = JSON.parse(fs.readFileSync(restaurantPath, 'utf8'));
   const okTime = (t) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
   if (!r || !r.hours || !okTime(r.hours.open) || !okTime(r.hours.close)
     || !r.delivery || !Array.isArray(r.delivery.blocks) || !Number.isInteger(r.delivery.fee)
@@ -52,4 +53,10 @@ function loadRestaurant() {
   return r;
 }
 
-module.exports = { loadMenu, loadRecommendations, loadPromotions, loadRestaurant };
+// Test-only: point the restaurant facts at a temporary file (null = back to the real file). Same pattern as orders.js.
+function setRestaurantPathForTests(file) {
+  if (process.env.NODE_ENV !== 'test') throw new Error('setRestaurantPathForTests is only available when NODE_ENV=test');
+  restaurantPath = file === null ? REAL_RESTAURANT_PATH : file;
+}
+
+module.exports = { loadMenu, loadRecommendations, loadPromotions, loadRestaurant, setRestaurantPathForTests };

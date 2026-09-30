@@ -2,7 +2,8 @@ const ROOT = require('path').join(__dirname, '..', '..');
 const assert = require('assert'); const dir = __dirname; const fs = require('fs'); const cp = require('child_process');
 const L = require(dir + '/lib.js'); const { sessions, base } = L.boot(3077);
 const { renderPrompt, promptFacts } = require(ROOT + '/backend/facts'); const { executeTool } = require(ROOT + '/backend/tools');
-const restFile = ROOT + '/data/restaurant.json'; const restKeep = fs.readFileSync(restFile, 'utf8'); process.on('exit', () => fs.writeFileSync(restFile, restKeep));
+const realRestFile = ROOT + '/data/restaurant.json'; const restKeep = fs.readFileSync(realRestFile, 'utf8');
+const restFile = global.__ORDERS_DIR + '/restaurant.json'; fs.writeFileSync(restFile, restKeep); require(ROOT + '/backend/data').setRestaurantPathForTests(restFile); // temp copy only: the real data/restaurant.json is never written
 const ordersFile = global.__ORDERS_FILE; const ordersKeep = fs.readFileSync(ordersFile, 'utf8'); process.on('exit', () => fs.writeFileSync(ordersFile, ordersKeep));
 const template = fs.readFileSync(ROOT + '/prompts/system-prompt.md', 'utf8'); const real = JSON.parse(restKeep);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const run = (state, name, args, latest) => executeTool(name, args, { state, latestMessage: latest }); const mild = [{ name: 'spice', choice: 'mild' }];
