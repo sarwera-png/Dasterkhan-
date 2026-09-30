@@ -1,4 +1,13 @@
 // Stores confirmed orders in data/orders.json.
+//
+// STORAGE NOTE (read before deploying):
+//  - File-based storage is for local development and classroom demos ONLY.
+//  - Vercel (and other serverless hosts) do not guarantee that files written at runtime are kept: writes may be lost
+//    between requests, may not be shared between instances, and the file system can be read-only. Orders saved this
+//    way could silently disappear.
+//  - This module also assumes a single server process (writes are synchronous and not locked across processes).
+//  - A real database is a planned V2 upgrade. Until then, live order submission must stay disabled on any
+//    serverless deployment.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
