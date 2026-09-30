@@ -8,6 +8,7 @@ const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
 const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
 const { guardReply } = require('./guard');
+const cooldown = require('./cooldown');
 const { renderPrompt, paymentLine, paymentLineUrdu } = require('./facts');
 const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
@@ -135,7 +136,9 @@ async function attemptModel(model, contents, systemInstruction) {
   } catch (err) {
     if (err === TIMEOUT) return { failure: 'timeout' };
     const status = Number(err && err.status);
-    return { failure: Number.isInteger(status) && status > 0 ? status : 'error' };
+    const failure = Number.isInteger(status) && status > 0 ? status : 'error';
+    cooldown.markCooling(model, failure, cooldown.retryAfterSeconds(err)); // 429 / 503: skip this model for a while
+    return { failure };
   } finally {
     clearTimeout(timer);
   }
@@ -248,6 +251,9 @@ app.post('/api/chat', async (req, res) => {
   let modelIndex = 0;
   let attempts = 0;
   let toolRounds = 0;
+  // If every model is cooling down, start with the one whose cooldown ends first: never fail without a real attempt.
+  const soonest = cooldown.earliestIfAllCooling(MODEL_CHAIN);
+  if (soonest) modelIndex = MODEL_CHAIN.indexOf(soonest);
 
   while (true) {
     let response = null;
@@ -260,6 +266,12 @@ app.post('/api/chat', async (req, res) => {
         break;
       }
       const model = MODEL_CHAIN[modelIndex];
+      const left = cooldown.secondsLeft(model);
+      if (left > 0 && !(attempts === 0 && soonest === model)) {
+        console.log(`Gemini skip: model=${model} (cooldown ${left}s)`);
+        modelIndex += 1;
+        continue;
+      }
       attempts += 1;
       const result = await attemptModel(model, contentsForModel(contents, model), systemInstruction);
 
