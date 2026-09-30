@@ -6,6 +6,7 @@ const { getOrCreateSession, getExistingSession } = require('./sessions');
 const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
+const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
 const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
@@ -22,6 +23,12 @@ const REQUEST_TIMEOUT_MS = 20000;
 const MAX_TOOL_ROUNDS = 4; // hard limit of tool-call rounds per customer message (free tier: ~5 requests/minute per model)
 const TOTAL_DEADLINE_MS = 80000; // stay under the browser's 90 s timeout
 const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+// Added to the model's instructions for every request while ordering is off (demo mode).
+const ORDERING_OFF_NOTE = [
+  '## Ordering status: ONLINE ORDERING IS OFF (demo)',
+  'Customers can browse the menu, build a cart, see prices and totals and get an order review, but orders cannot be placed right now. There is no "Confirm order" button and nothing can be confirmed or saved.',
+  'After showing a review, or whenever the customer wants to place the order, tell them in their own language that this is a demo and orders cannot be placed right now. Never say or imply that an order was placed, confirmed, saved or sent, and never tell the customer to press a button. This overrides the parts of the order review steps that mention the "Confirm order" button.'
+].join('\n');
 const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
 const BUSY_REPLY = 'Assistant is busy right now, please try again in a minute.';
@@ -157,7 +164,7 @@ function reviewData() {
 // The "Confirm order" button is only offered while this is set. Returns null otherwise.
 function validReviewVersion(state) {
   try {
-    if (state.status !== 'draft' || !state.reviewShownVersion) return null;
+    if (!ordersEnabled() || state.status !== 'draft' || !state.reviewShownVersion) return null; // no button while ordering is off
     const built = buildReview(state, reviewData());
     return built.ok && built.review.reviewVersion === state.reviewShownVersion ? built.review.reviewVersion : null;
   } catch (err) {
@@ -218,6 +225,10 @@ app.post('/api/chat', async (req, res) => {
       reply: FALLBACK_REPLY,
       ...extras()
     });
+  }
+
+  if (!ordersEnabled()) {
+    systemInstruction += '\n\n' + ORDERING_OFF_NOTE;
   }
 
   // For this request only: remind the model of the script of the latest message (history can pull it the other way).
@@ -319,6 +330,10 @@ app.post('/api/order/confirm', (req, res) => {
     console.error(`Order confirm: rejected (${error.toUpperCase()})`);
     return res.status(status).json({ ok: false, error, customerMessage });
   };
+  // Kill switch, checked first: while ordering is off nothing is confirmed and nothing is written.
+  if (!ordersEnabled()) {
+    return reject(503, 'ordering_disabled', ORDERING_DISABLED_MESSAGE);
+  }
   if (typeof sessionId !== 'string' || typeof reviewVersion !== 'string' || !/^[0-9a-f]{16}$/.test(reviewVersion)) {
     return reject(400, 'bad_request', 'Sorry, something went wrong. Please try again.');
   }

@@ -4,6 +4,7 @@ const { loadMenu, loadRecommendations, loadPromotions, loadRestaurant } = requir
 const { computeTotals, totalsLines, foodSubtotal, checkEligibility, computeDiscount } = require('./pricing');
 const { fail, normalize } = require('./fail');
 const checkout = require('./checkout');
+const { ordersEnabled } = require('./config');
 const { buildReview } = require('./review');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
@@ -457,7 +458,7 @@ function getRecommendations(args, ctx) {
 function getOrderReview(args, ctx) {
   const state = ctx.state;
   const note = refreshTotals(state);
-  const built = buildReview(state, { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant() });
+  const built = buildReview(state, { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant(), ordersEnabled: ordersEnabled() });
   if (!built.ok) {
     return fail('review_not_ready', built.customerMessage, { missing: built.missing, ...(built.nextStep ? { nextStep: built.nextStep } : {}), ...(note || {}) },
       'The review cannot be shown yet. Ask the customer only for what is listed as missing' + (built.nextStep ? ` (next step: ${built.nextStep})` : '') + '. Do not make up any detail.');
@@ -471,7 +472,9 @@ function getOrderReview(args, ctx) {
     review: data,
     ...(note || {}),
     customerMessage: `${note && note.discountRemoved ? `${note.discountRemoved.customerMessage} ${note.discountRemoved.detail}\n` : ''}${customerMessage}`,
-    internalNote: 'Show the review exactly as written (translate only the labels; never change a value or an amount). The order is NOT placed yet: only the customer pressing the "Confirm order" button places it. Never say the order is placed, confirmed or saved.'
+    internalNote: ordersEnabled()
+      ? 'Show the review exactly as written (translate only the labels; never change a value or an amount). The order is NOT placed yet: only the customer pressing the "Confirm order" button places it. Never say the order is placed, confirmed or saved.'
+      : 'Show the review exactly as written (translate only the labels; never change a value or an amount). Online ordering is OFF (demo): nothing can be placed and there is no button. Say that this is a demo and orders cannot be placed right now. Never say the order is placed, confirmed or saved.'
   };
 }
 

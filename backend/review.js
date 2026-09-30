@@ -62,11 +62,11 @@ function buildReview(state, data) {
     payment: isDelivery ? 'Cash on delivery' : 'Cash on pickup'
   };
   review.reviewVersion = versionOf({ ...review });
-  review.customerMessage = reviewText(review, state, restaurant, priced);
+  review.customerMessage = reviewText(review, state, restaurant, priced, data.ordersEnabled !== false);
   return { ok: true, review };
 }
 
-function reviewText(review, state, restaurant, priced) {
+function reviewText(review, state, restaurant, priced, ordersOn) {
   const lines = ['Order review', 'Items:'];
   for (const item of review.items) lines.push(`${item.quantity} x ${item.name}${optionsText(item.options)} - ${item.lineTotal} PKR`);
   lines.push(`Order type: ${review.orderType === 'delivery' ? 'Delivery' : 'Pickup'}`);
@@ -82,7 +82,9 @@ function reviewText(review, state, restaurant, priced) {
   }
   lines.push(...totalsLines(priced));
   lines.push(`Payment: ${review.payment.toLowerCase()}`);
-  lines.push('Please check everything above. If it is all correct, press the "Confirm order" button below the chat. If you want to change something, tell me.');
+  lines.push(ordersOn
+    ? 'Please check everything above. If it is all correct, press the "Confirm order" button below the chat. If you want to change something, tell me.'
+    : 'Please check everything above. This is a demo, so orders cannot be placed right now. If you want to change something, tell me.');
   return lines.join('\n');
 }
 
