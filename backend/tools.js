@@ -55,6 +55,22 @@ const TOOL_DECLARATIONS = [
       },
       required: ['itemId']
     }
+  },
+  {
+    name: 'removeItem',
+    description:
+      'Remove an item from the cart, or reduce its quantity. With no quantity the whole line is removed. ' +
+      'With a quantity, that many are taken off (removing all of them removes the line). Use it when the customer says things like "remove the raita" or "one less biryani".',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        itemId: { type: 'STRING', description: 'Menu item id of the cart line, e.g. RAI01' },
+        quantity: { type: 'INTEGER', description: 'How many to take off (1 or more). Leave out to remove the whole line.' },
+        currentOptions: { ...OPTIONS_SCHEMA, description: 'Only needed when the cart has several lines of the same item with different options: the options of the line to change, so it can be identified.' },
+        lineId: { type: 'STRING', description: 'Optional cart line id (e.g. L1) if known from a previous tool result' }
+      },
+      required: ['itemId']
+    }
   }
 ];
 
@@ -250,7 +266,32 @@ function modifyItem(args, ctx) {
   return { ok: true, line: lineView(line), cartLineCount: cart.length };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem };
+function removeItem(args, ctx) {
+  const cart = ctx.state.items;
+  const found = findCartLine(cart, args);
+  if (found.error) return found.error;
+  const line = found.line;
+
+  const quantityGiven = args.quantity !== undefined && args.quantity !== null;
+  if (quantityGiven) {
+    const quantityError = validateQuantity(args.quantity);
+    if (quantityError) return quantityError;
+    if (args.quantity > line.quantity) {
+      return fail('invalid_quantity', `The cart has only ${line.quantity} of ${line.name}, so ${args.quantity} cannot be removed. Ask the customer what they want.`);
+    }
+  }
+  const removedQuantity = quantityGiven ? args.quantity : line.quantity;
+  const removed = lineView({ ...line, quantity: removedQuantity });
+
+  if (removedQuantity >= line.quantity) {
+    cart.splice(cart.indexOf(line), 1);
+    return { ok: true, lineRemoved: true, removed, remainingLine: null, cartLineCount: cart.length };
+  }
+  line.quantity -= removedQuantity;
+  return { ok: true, lineRemoved: false, removed, remainingLine: lineView(line), cartLineCount: cart.length };
+}
+
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem };
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
 function executeTool(name, args, ctx) {
