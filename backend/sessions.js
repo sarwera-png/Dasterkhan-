@@ -12,6 +12,7 @@ function newOrderState() {
   return {
     items: [], // cart lines: { lineId, id, name, quantity, options: { <optionName>: <choice> } }
     lineCounter: 0, // used to give each cart line a unique lineId
+    declinedSuggestions: [], // item ids the customer said no to (never suggested again in this session)
     orderType: null, // 'pickup' | 'delivery'
     customer: { name: null, phone: null, address: null },
     discount: null,

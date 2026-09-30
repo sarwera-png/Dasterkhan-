@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
+const RECOMMENDATIONS_PATH = path.join(__dirname, '..', 'data', 'recommendations.json');
 
 function loadMenu() {
   const menu = JSON.parse(fs.readFileSync(MENU_PATH, 'utf8'));
@@ -13,4 +14,17 @@ function loadMenu() {
   return menu;
 }
 
-module.exports = { loadMenu };
+// Which menu items go with which (item ids). Only ids that exist on the menu are ever suggested.
+function loadRecommendations() {
+  const data = JSON.parse(fs.readFileSync(RECOMMENDATIONS_PATH, 'utf8'));
+  if (!data || typeof data.pairings !== 'object' || data.pairings === null) {
+    throw new Error('invalid recommendations');
+  }
+  return {
+    maxSuggestions: Math.min(Number.isInteger(data.maxSuggestions) && data.maxSuggestions > 0 ? data.maxSuggestions : 2, 2),
+    pairings: data.pairings,
+    fallback: Array.isArray(data.fallback) ? data.fallback : []
+  };
+}
+
+module.exports = { loadMenu, loadRecommendations };

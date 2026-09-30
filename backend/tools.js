@@ -1,6 +1,6 @@
 // Tools the assistant can call (Gemini function calling). All validation is done here in code,
 // against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, message }.
-const { loadMenu } = require('./data');
+const { loadMenu, loadRecommendations } = require('./data');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
 
@@ -77,6 +77,22 @@ const TOOL_DECLARATIONS = [
     description:
       'Get the current cart as an itemized summary (items, quantities and options). Call it whenever the customer asks what is in their cart or asks you to read the order back. ' +
       'Never describe the cart from memory: always use this tool. It does not show prices or totals.'
+  },
+  {
+    name: 'getRecommendations',
+    description:
+      'Get at most 1-2 real menu items that could go with what is in the cart, to offer to the customer. Suggestions only: never add a suggested item unless the customer clearly says yes. ' +
+      'If the customer just said no to a suggestion, call this again with declinedItemIds so it is never suggested again, and do not push another suggestion in the same reply.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        declinedItemIds: {
+          type: 'ARRAY',
+          description: 'Menu item ids of suggestions the customer has just declined',
+          items: { type: 'STRING' }
+        }
+      }
+    }
   }
 ];
 
@@ -317,7 +333,64 @@ function viewCart(args, ctx) {
   };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart };
+// Suggests up to 2 real, available items that pair with the cart, skipping items already in the cart and any the
+// customer declined earlier in this session. Read-only for the cart: it never adds anything.
+function getRecommendations(args, ctx) {
+  const menu = loadMenu();
+  const state = ctx.state;
+
+  if (args.declinedItemIds !== undefined && args.declinedItemIds !== null) {
+    if (!Array.isArray(args.declinedItemIds)) {
+      return fail('invalid_declined', 'declinedItemIds must be a list of menu item ids.');
+    }
+    const toRecord = [];
+    for (const raw of args.declinedItemIds) {
+      const found = findMenuItem(menu, raw);
+      if (!found) return fail('unknown_item', 'One of the declined items is not on the menu.');
+      toRecord.push(found.id);
+    }
+    for (const id of toRecord) {
+      if (!state.declinedSuggestions.includes(id)) state.declinedSuggestions.push(id);
+    }
+  }
+
+  if (state.items.length === 0) {
+    return { ok: true, suggestions: [], message: 'The cart is empty, so there is nothing to base a suggestion on.' };
+  }
+
+  const { maxSuggestions, pairings, fallback } = loadRecommendations();
+  const inCart = new Set(state.items.map((line) => line.id));
+  const declined = new Set(state.declinedSuggestions);
+  const suggestions = [];
+  const seen = new Set();
+  const consider = (id, basedOn) => {
+    if (suggestions.length >= maxSuggestions || seen.has(id)) return;
+    seen.add(id);
+    const item = menu.items.find((i) => i.id === id);
+    if (!item || item.available !== true || inCart.has(id) || declined.has(id)) return;
+    suggestions.push({
+      id: item.id,
+      name: item.name,
+      priceText: `${item.price} ${menu.currency || 'PKR'}`,
+      requiredOptions: item.requiredOptions || [],
+      basedOn
+    });
+  };
+  for (const line of state.items) {
+    for (const id of pairings[line.id] || []) consider(id, line.name);
+  }
+  for (const id of fallback) consider(id, null);
+
+  return {
+    ok: true,
+    suggestions,
+    message: suggestions.length
+      ? 'Offer these as a suggestion only. Do not add anything unless the customer clearly says yes.'
+      : 'No suggestions right now. Do not suggest anything.'
+  };
+}
+
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations };
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
 function executeTool(name, args, ctx) {

@@ -1,0 +1,13 @@
+{
+  "maxSuggestions": 2,
+  "pairings": {
+    "BRY01": ["RAI01", "SAL01"],
+    "PUL01": ["RAI01", "SAL01"],
+    "DAL01": ["NAN01", "SAL01"],
+    "ROL01": ["TEA01", "WAT01"],
+    "RAI01": ["NAN01"],
+    "SAL01": ["WAT01"],
+    "NAN01": ["TEA01"]
+  },
+  "fallback": ["TEA01", "KHR01"]
+}
