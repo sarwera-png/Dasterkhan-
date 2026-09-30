@@ -4,6 +4,7 @@ const { loadMenu, loadRecommendations, loadPromotions, loadRestaurant } = requir
 const { computeTotals, totalsLines, foodSubtotal, checkEligibility, computeDiscount } = require('./pricing');
 const { fail, normalize } = require('./fail');
 const checkout = require('./checkout');
+const { buildReview } = require('./review');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
 
@@ -110,6 +111,13 @@ const TOOL_DECLARATIONS = [
       },
       required: ['code']
     }
+  },
+  {
+    name: 'getOrderReview',
+    description:
+      'Get the final order review, written by the system: items, quantities, options, order type, pickup or delivery details, promotion, subtotal, discount, delivery fee and total. ' +
+      'Call it when the customer says they are done adding items or asks to order or check out, after the order type and all details are set (and, for delivery, the address is confirmed). ' +
+      'If something is still missing the result lists it: ask for that. Show the review exactly as returned, then invite the customer to press the "Confirm order" button below the chat.',
   },
   {
     name: 'setOrderType',
@@ -443,7 +451,29 @@ function getRecommendations(args, ctx) {
   };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType, ...checkout.handlers };
+// Builds the review from the stored state. Any promo code that no longer qualifies is dropped first, so the review is current.
+function getOrderReview(args, ctx) {
+  const state = ctx.state;
+  const note = refreshTotals(state);
+  const built = buildReview(state, { menu: loadMenu(), promotions: loadPromotions().promotions, restaurant: loadRestaurant() });
+  if (!built.ok) {
+    return fail('review_not_ready', built.customerMessage, { missing: built.missing, ...(built.nextStep ? { nextStep: built.nextStep } : {}), ...(note || {}) },
+      'The review cannot be shown yet. Ask the customer only for what is listed as missing' + (built.nextStep ? ` (next step: ${built.nextStep})` : '') + '. Do not make up any detail.');
+  }
+  const review = built.review;
+  state.reviewShownVersion = review.reviewVersion;
+  const { customerMessage, ...data } = review;
+  return {
+    ok: true,
+    reviewVersion: review.reviewVersion,
+    review: data,
+    ...(note || {}),
+    customerMessage: `${note && note.discountRemoved ? `${note.discountRemoved.customerMessage} ${note.discountRemoved.detail}\n` : ''}${customerMessage}`,
+    internalNote: 'Show the review exactly as written (translate only the labels; never change a value or an amount). The order is NOT placed yet: only the customer pressing the "Confirm order" button places it. Never say the order is placed, confirmed or saved.'
+  };
+}
+
+const HANDLERS = { getOrderReview, getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType, ...checkout.handlers };
 
 // ---- Totals and promotions (rules live in data/*.json; the maths is in pricing.js, all checks run in code) ----
 

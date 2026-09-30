@@ -45,6 +45,11 @@ function parseTimeOfDay(input) {
   return { minutes: hour * 60 + minute };
 }
 
+// "19:30" -> "7:30 PM"
+function formatHHMM(hhmm) {
+  return formatTime(toMinutes(hhmm));
+}
+
 function hoursText(restaurant) {
   return `${formatTime(toMinutes(restaurant.hours.open))} to ${formatTime(toMinutes(restaurant.hours.close))}`;
 }
@@ -410,4 +415,4 @@ function confirmAddress(args, ctx) {
 
 const handlers = { setCustomerDetails, readBackAddress, confirmAddress };
 
-module.exports = { declarations, handlers, missingDetails, optionalDetails, askText, invalidateAddressConfirmation, detailsSnapshot, parseTimeOfDay, formatTime, validateName, validatePhone, parseBlock };
+module.exports = { declarations, handlers, missingDetails, optionalDetails, askText, addressText, formatHHMM, invalidateAddressConfirmation, detailsSnapshot, parseTimeOfDay, formatTime, validateName, validatePhone, parseBlock };
