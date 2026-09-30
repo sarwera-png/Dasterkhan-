@@ -359,9 +359,21 @@ function describeLine(line) {
 
 // Read-only: reports exactly what is stored in this session's order state.
 function viewCart(args, ctx) {
-  const cart = ctx.state.items;
+  const state = ctx.state;
+  const cart = state.items;
+  // Order type and applied promotions exactly as stored (amounts were computed by code, never by the model).
+  const orderType = state.orderType || null;
+  const orderTypeText = orderType || 'not set';
+  const promotions = state.discount
+    ? [{ code: state.discount.code, name: state.discount.name, discountAmount: state.discount.amount, discountText: `${state.discount.amount} PKR` }]
+    : [];
+  const orderTypeLine = `Order type: ${orderType || 'not chosen yet'}`;
+  const promoLines = promotions.map((promo) => `Promo code ${promo.code}: ${promo.discountText} off your food`);
+  const extras = [orderTypeLine, ...promoLines].join('\n');
+
   if (cart.length === 0) {
-    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', customerMessage: 'Your cart is empty.' };
+    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.', orderType, orderTypeText, promotions,
+      customerMessage: `Your cart is empty.\n${extras}` };
   }
   return {
     ok: true,
@@ -369,7 +381,10 @@ function viewCart(args, ctx) {
     lineCount: cart.length,
     lines: cart.map((line) => ({ ...lineView(line), text: describeLine(line) })),
     summary: cart.map(describeLine).join('\n'),
-    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}`
+    orderType,
+    orderTypeText,
+    promotions,
+    customerMessage: `Your cart:\n${cart.map(describeLine).join('\n')}\n${extras}`
   };
 }
 
@@ -578,4 +593,32 @@ function executeTool(name, args, ctx) {
   }
 }
 
-module.exports = { TOOL_DECLARATIONS, executeTool };
+// One short, safe log line per tool call: tool name, ok/rejected, a reason code or small counts.
+// It never includes the cart contents, customer details, messages, prompts or any secret.
+function describeToolOutcome(name, result, state) {
+  const tool = Object.prototype.hasOwnProperty.call(HANDLERS, name) ? name : 'unknown';
+  if (!result || result.ok !== true) {
+    const code = String((result && result.error) || 'unknown').replace(/[^A-Za-z_]/g, '').toUpperCase() || 'UNKNOWN';
+    return `${tool} -> rejected (${code})`;
+  }
+  const items = state && Array.isArray(state.items) ? state.items.length : 0;
+  const orderType = state && state.orderType ? state.orderType : 'not-set';
+  const promos = state && state.discount && state.discount.code ? String(state.discount.code).replace(/[^A-Za-z0-9_-]/g, '') : 'none';
+  return `${tool} -> ok (items=${items}, orderType=${orderType}, promos=${promos})`;
+}
+
+// Runs all tool calls of one model round for one session. setOrderType always runs first (the order type decides
+// whether promo codes apply), whatever order the model sent the calls in. Results are returned in the ORIGINAL
+// call order so they still line up with the model's function calls.
+function runToolCalls(calls, ctx) {
+  const rank = (call) => (call && call.name === 'setOrderType' ? 0 : 1);
+  const order = calls.map((_, i) => i).sort((a, b) => rank(calls[a]) - rank(calls[b]) || a - b);
+  const results = new Array(calls.length);
+  for (const i of order) {
+    results[i] = executeTool(calls[i].name, calls[i].args, ctx);
+    console.log(`Tool result: ${describeToolOutcome(calls[i].name, results[i], ctx.state)}`);
+  }
+  return results;
+}
+
+module.exports = { TOOL_DECLARATIONS, executeTool, runToolCalls, describeToolOutcome };

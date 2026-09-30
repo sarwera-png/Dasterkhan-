@@ -4,7 +4,7 @@ const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
 const { getOrCreateSession } = require('./sessions');
 const { loadMenu } = require('./data');
-const { TOOL_DECLARATIONS, executeTool } = require('./tools');
+const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
 
 require('dotenv').config({ path: path.join(__dirname, '..', '.env'), quiet: true });
 
@@ -269,10 +269,11 @@ app.post('/api/chat', async (req, res) => {
       : { role: 'model', parts: calls.map((c) => ({ functionCall: c })) };
     turnAuthors.set(turn, usedModel);
     contents.push(turn);
+    const results = runToolCalls(calls, { state }); // setOrderType first; results stay in the model's call order
     contents.push({
       role: 'user',
-      parts: calls.map((call) => {
-        const part = { name: call.name, response: executeTool(call.name, call.args, { state }) };
+      parts: calls.map((call, i) => {
+        const part = { name: call.name, response: results[i] };
         if (call.id) part.id = call.id;
         return { functionResponse: part };
       })
