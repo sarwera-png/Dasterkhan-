@@ -20,7 +20,7 @@ This is a **classroom training demo for a FICTIONAL restaurant** (Karachi Dastar
 
 ## Run locally
 
-1. Install Node.js 20 or newer, then in this folder run `npm install`.
+1. Install Node.js 22 or newer (22 is the only version this demo has been tested on), then in this folder run `npm install`.
 2. Copy `.env.example` to `.env` and fill in your own values (never commit `.env`):
    - `GEMINI_API_KEY` - your Google Gemini API key (free tier is rate limited)
    - `STAFF_PASSWORD` - a long, hard-to-guess password for the staff dashboard
