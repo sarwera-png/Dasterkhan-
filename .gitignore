@@ -9,6 +9,9 @@ node_modules/
 # Local data
 data/orders.json
 
+# Owner live-check result files
+tests/live-results/
+
 # OS files
 .DS_Store
 Thumbs.db

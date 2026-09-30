@@ -6,7 +6,8 @@
     "start": "node backend/server.js",
     "audit": "node tests/audit/audit.js",
     "journey": "node tests/journey/journey.js",
-    "test": "node tests/run-all.js"
+    "test": "node tests/run-all.js",
+    "live-check": "node scripts/live-check.js"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",
