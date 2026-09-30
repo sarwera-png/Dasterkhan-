@@ -36,9 +36,24 @@
     bubble.className = 'chat-msg chat-msg-' + who + (extraClass ? ' ' + extraClass : '');
     bubble.setAttribute('dir', 'auto');
     if (URDU_SCRIPT.test(text)) {
-      bubble.setAttribute('lang', 'ur'); // picks up the Urdu font and line-height rules
+      bubble.setAttribute('lang', 'ur'); // picks up the Urdu font stack
     }
-    bubble.textContent = text; // plain text only, never innerHTML
+    // One block per line, so each line gets its own direction and line height: only lines that contain Urdu
+    // need the tall Nastaliq spacing, English lines inside the same bubble stay tight. Plain text only, never innerHTML.
+    // The newline characters are kept between the blocks, so the bubble's textContent is exactly the original text.
+    text.split('\n').forEach(function (line, index) {
+      if (index > 0) {
+        bubble.appendChild(document.createTextNode('\n'));
+      }
+      var row = document.createElement('div');
+      row.className = line === '' ? 'chat-line chat-line-blank' : 'chat-line';
+      row.setAttribute('dir', 'auto');
+      if (URDU_SCRIPT.test(line)) {
+        row.setAttribute('lang', 'ur');
+      }
+      row.textContent = line;
+      bubble.appendChild(row);
+    });
     messages.appendChild(bubble);
     messages.scrollTop = messages.scrollHeight;
     return bubble;
