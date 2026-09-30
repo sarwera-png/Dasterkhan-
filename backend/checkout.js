@@ -1,4 +1,4 @@
-// Customer details for the order (pickup and, later, delivery). Everything is validated here in code;
+// Customer details for the order (pickup and delivery). Everything is validated here in code;
 // the model only passes on what the customer said and never fills in or guesses a missing detail.
 const { fail } = require('./fail');
 const { loadRestaurant } = require('./data');
@@ -80,6 +80,47 @@ function validatePickupTime(raw) {
   return { value: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`, minutes: parsed.minutes };
 }
 
+// Pakistani mobile: 03XXXXXXXXX or +923XXXXXXXXX (spaces and dashes allowed). Stored as 03XXXXXXXXX.
+function validatePhone(raw) {
+  const compact = typeof raw === 'string' ? raw.replace(/[\s\-()]/g, '') : '';
+  let local = null;
+  if (/^03\d{9}$/.test(compact)) local = compact;
+  else if (/^\+923\d{9}$/.test(compact)) local = `0${compact.slice(3)}`;
+  if (!local) {
+    return { error: fail('invalid_phone', "Sorry, that doesn't look like a Pakistani mobile number. Please share it like 03XX XXXXXXX.", null,
+      'Nothing was stored. Ask again. Do not guess, complete or change any digits.') };
+  }
+  return { value: local };
+}
+
+function cleanLine(raw, { min = 1, max, pattern } = {}) {
+  const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+  if (text.length < min || text.length > max || /[\u0000-\u001f\u007f]/.test(text) || (pattern && !pattern.test(text))) return null;
+  return text;
+}
+
+const HOUSE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\s\-\/#.,]*$/u;
+const STREET_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\s\-\/#.,'’]*$/u;
+
+// "3", "Block 3", "block-3" -> 3. Anything else ("13-D", "three-ish") is not understood: we ask again.
+function parseBlock(raw) {
+  const text = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  const m = /^(?:block|blk|بلاک)?\s*[-#]?\s*(\d{1,2})$/.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+function isInArea(raw, restaurant) {
+  const text = typeof raw === 'string' ? raw.toLowerCase() : '';
+  return /gulshan|گلشن/.test(text) || text.includes(restaurant.area.toLowerCase());
+}
+
+function outsideAreaError(restaurant) {
+  const blocks = restaurant.delivery.blocks;
+  return fail('outside_delivery_area',
+    `Sorry, we deliver only to ${restaurant.area} Blocks ${Math.min(...blocks)} to ${Math.max(...blocks)}. Would you like to order for pickup instead?`, null,
+    'Delivery was refused and nothing was stored for this address. Offer pickup, but do not switch the order type yourself: the customer must choose.');
+}
+
 // ---- what is still missing ----------------------------------------------------------------------
 
 // Details still needed for this order, asked one short question each. Nothing is ever guessed or filled in.
@@ -87,13 +128,39 @@ function missingDetails(state) {
   const missing = [];
   if (!state.orderType) return missing;
   if (!state.customer.name) missing.push({ field: 'name', ask: 'May I have your name for the order?' });
+  if (state.orderType === 'delivery') {
+    const a = state.customer.address || {};
+    if (!state.customer.phone) missing.push({ field: 'phone', ask: 'What is the best mobile number to reach you? (for example 03XX XXXXXXX)' });
+    if (!a.block) missing.push({ field: 'block', ask: 'Which block of Gulshan-e-Iqbal is it in (1 to 5)?' });
+    if (!a.house) missing.push({ field: 'house', ask: 'What is the house or flat number?' });
+    if (!a.street) missing.push({ field: 'street', ask: 'Which street is it on?' });
+  }
   return missing;
+}
+
+// Questions for the customer, in one message: several missing address parts are asked together.
+function askText(missing) {
+  const addressFields = missing.filter((m) => ['block', 'house', 'street'].includes(m.field));
+  const others = missing.filter((m) => !['block', 'house', 'street'].includes(m.field));
+  const asks = others.map((m) => m.ask);
+  if (addressFields.length >= 2) {
+    asks.push(`Please tell me the ${addressFields.map((m) => ({ block: 'block number (1 to 5)', house: 'house or flat number', street: 'street' }[m.field])).join(', ').replace(/, ([^,]*)$/, ' and $1')} for the delivery address.`);
+  } else {
+    asks.push(...addressFields.map((m) => m.ask));
+  }
+  return asks.join(' ');
 }
 
 function optionalDetails(state) {
   const optional = [];
   if (state.orderType === 'pickup' && !state.pickupTime && !state.pickupTimeDeclined) {
     optional.push({ field: 'pickupTime', ask: 'Would you like to set a pickup time, or do you have no preference?' });
+  }
+  if (state.orderType === 'delivery' && !state.addressExtrasDeclined) {
+    const a = state.customer.address || {};
+    if (!a.apartment || !a.instructions) {
+      optional.push({ field: 'extras', ask: 'Is there an apartment or unit number, or any delivery instructions? (You can say no.)' });
+    }
   }
   return optional;
 }
@@ -104,15 +171,25 @@ const declarations = [
   {
     name: 'setCustomerDetails',
     description:
-      'Store the customer\'s order details, exactly as the customer said them. For pickup: name (required) and an optional pickup time. ' +
-      'Only pass details the customer actually gave; never guess, invent or fill in a missing detail. The order type must be set first (setOrderType). ' +
-      'The result lists missingDetails: ask the customer only for those, one short question at a time. Never ask a pickup customer for an address.',
+      'Store the customer\'s order details, exactly as the customer said them. Pickup: name (required) and an optional pickup time. ' +
+      'Delivery: name, mobile phone and a full address (block number, house or flat number, street), plus an optional apartment or unit and delivery instructions. ' +
+      'Only pass details the customer actually gave; never guess, invent or fill in a missing detail. A landmark alone is not an address. The order type must be set first (setOrderType). ' +
+      'The result lists missingDetails: ask the customer only for those. Never ask a pickup customer for an address or phone number.',
     parameters: {
       type: 'OBJECT',
       properties: {
         name: { type: 'STRING', description: 'Customer name, as given' },
         pickupTime: { type: 'STRING', description: 'Preferred pickup time in 24-hour HH:MM (for example 19:30), only if the customer gave one' },
-        noPickupTimePreference: { type: 'BOOLEAN', description: 'true if the customer said they have no pickup time preference' }
+        noPickupTimePreference: { type: 'BOOLEAN', description: 'true if the customer said they have no pickup time preference' },
+        phone: { type: 'STRING', description: 'Delivery only: mobile number exactly as given, like 03001234567 or +923001234567' },
+        area: { type: 'STRING', description: 'Delivery only: the area or locality the customer named, if any (for example Gulshan-e-Iqbal or Clifton)' },
+        block: { type: 'STRING', description: 'Delivery only: the block number, for example 3' },
+        houseOrFlat: { type: 'STRING', description: 'Delivery only: house or flat number, as given' },
+        street: { type: 'STRING', description: 'Delivery only: street name or number, as given' },
+        apartment: { type: 'STRING', description: 'Delivery only: apartment or unit, if the customer gave one' },
+        landmark: { type: 'STRING', description: 'Delivery only: a nearby landmark, if the customer gave one. It is not a replacement for the address.' },
+        instructions: { type: 'STRING', description: 'Delivery only: delivery instructions, if the customer gave some' },
+        noExtraAddressDetails: { type: 'BOOLEAN', description: 'true if the customer said they have no apartment/unit or delivery instructions' }
       }
     }
   }
@@ -125,7 +202,10 @@ function setCustomerDetails(args, ctx) {
       'Nothing was stored. Ask; do not assume. After the customer answers in their own words, call setOrderType.');
   }
   const has = (v) => v !== undefined && v !== null && v !== '';
+  const restaurant = loadRestaurant();
+  const isDelivery = state.orderType === 'delivery';
   const updates = {};
+  const address = {};
   const notes = [];
 
   if (has(args.name)) {
@@ -133,25 +213,78 @@ function setCustomerDetails(args, ctx) {
     if (v.error) return v.error;
     updates.name = v.value;
   }
+
+  // ---- pickup-only details
   if (args.noPickupTimePreference === true) {
-    if (state.orderType === 'pickup') updates.pickupTimeDeclined = true;
+    if (!isDelivery) updates.pickupTimeDeclined = true;
   } else if (has(args.pickupTime)) {
-    if (state.orderType !== 'pickup') {
+    if (isDelivery) {
       notes.push('A pickup time does not apply to delivery orders. It was ignored. Do not promise any delivery time.');
     } else {
       const v = validatePickupTime(args.pickupTime);
       if (v.error) return v.error;
       updates.pickupTime = v.value;
-      updates.pickupTimeMinutes = v.minutes;
     }
   }
-  if (Object.keys(updates).length === 0) {
+
+  // ---- delivery-only details (ignored for pickup, never asked for)
+  const deliveryFields = ['phone', 'area', 'block', 'houseOrFlat', 'street', 'apartment', 'landmark', 'instructions'];
+  if (!isDelivery && (deliveryFields.some((f) => has(args[f])) || args.noExtraAddressDetails === true)) {
+    notes.push('Address and phone details are not needed for pickup and were ignored. Do not ask for them.');
+  }
+  if (isDelivery) {
+    if (has(args.area) && !isInArea(args.area, restaurant)) return outsideAreaError(restaurant);
+    if (has(args.block)) {
+      const block = parseBlock(args.block);
+      if (block === null) {
+        return fail('invalid_block', `Which block is it, from ${Math.min(...restaurant.delivery.blocks)} to ${Math.max(...restaurant.delivery.blocks)}?`, null,
+          'Nothing was stored. The block must be a plain number. Do not guess it.');
+      }
+      if (!restaurant.delivery.blocks.includes(block)) return outsideAreaError(restaurant);
+      address.block = block;
+    }
+    if (has(args.houseOrFlat)) {
+      const house = cleanLine(args.houseOrFlat, { max: 40, pattern: HOUSE_PATTERN });
+      if (!house) return fail('invalid_address', "Sorry, I didn't catch the house or flat number. What is it?", null, 'Nothing was stored. Do not guess it.');
+      address.house = house;
+    }
+    if (has(args.street)) {
+      const street = cleanLine(args.street, { min: 1, max: 80, pattern: STREET_PATTERN });
+      if (!street) return fail('invalid_address', "Sorry, I didn't catch the street. Which street is it on?", null, 'Nothing was stored. Do not guess it.');
+      address.street = street;
+    }
+    if (has(args.apartment)) {
+      const apartment = cleanLine(args.apartment, { max: 40, pattern: HOUSE_PATTERN });
+      if (!apartment) return fail('invalid_address', "Sorry, I didn't catch the apartment or unit. What is it?", null, 'Nothing was stored.');
+      address.apartment = apartment;
+    }
+    if (has(args.landmark)) {
+      const landmark = cleanLine(args.landmark, { max: 80 });
+      if (!landmark) return fail('invalid_address', "Sorry, I didn't catch that landmark. Could you say it again?", null, 'Nothing was stored.');
+      address.landmark = landmark;
+    }
+    if (has(args.instructions)) {
+      const instructions = cleanLine(args.instructions, { max: 200 });
+      if (!instructions) return fail('invalid_address', "Sorry, those delivery instructions are too long or unclear. Could you shorten them?", null, 'Nothing was stored.');
+      address.instructions = instructions;
+    }
+    if (has(args.phone)) {
+      const v = validatePhone(args.phone);
+      if (v.error) return v.error;
+      updates.phone = v.value;
+    }
+    if (args.noExtraAddressDetails === true) updates.addressExtrasDeclined = true;
+  }
+
+  if (Object.keys(updates).length === 0 && Object.keys(address).length === 0) {
     const missing = missingDetails(state);
-    return fail('nothing_to_store', missing.length ? missing[0].ask : 'What would you like to tell me?', { missingDetails: missing },
+    return fail('nothing_to_store', missing.length ? askText(missing) : 'What would you like to tell me?', { missingDetails: missing },
       'Nothing was stored. Only pass details the customer actually gave.');
   }
 
+  // ---- all checks passed: store (nothing above changed the state)
   if (updates.name !== undefined) state.customer.name = updates.name;
+  if (updates.phone !== undefined) state.customer.phone = updates.phone;
   if (updates.pickupTime !== undefined) {
     state.pickupTime = updates.pickupTime;
     state.pickupTimeDeclined = false;
@@ -160,21 +293,30 @@ function setCustomerDetails(args, ctx) {
     state.pickupTime = null;
     state.pickupTimeDeclined = true;
   }
+  if (updates.addressExtrasDeclined) state.addressExtrasDeclined = true;
+  if (Object.keys(address).length) {
+    state.customer.address = { block: null, house: null, street: null, apartment: null, landmark: null, instructions: null, ...(state.customer.address || {}) };
+    Object.assign(state.customer.address, address);
+  }
 
   const missing = missingDetails(state);
   const optional = optionalDetails(state);
   const parts = [];
   if (updates.name !== undefined) parts.push(`Thanks, ${state.customer.name}.`);
+  else if (Object.keys(address).length || updates.phone !== undefined) parts.push('Thanks.');
   if (updates.pickupTime !== undefined) {
     parts.push(`I've noted ${formatTime(toMinutes(state.pickupTime))} as your preferred pickup time. I can't promise the food will be ready at that time.`);
   }
   if (updates.pickupTimeDeclined) parts.push('No problem, no pickup time preference noted.');
-  if (missing.length) parts.push(missing.map((m) => m.ask).join(' '));
+  if (address.landmark && missing.some((m) => ['block', 'house', 'street'].includes(m.field))) {
+    parts.push('A landmark helps, but I also need the full address.');
+  }
+  if (missing.length) parts.push(askText(missing));
   else if (optional.length) parts.push(optional[0].ask);
 
   return {
     ok: true,
-    stored: Object.keys(updates).filter((k) => k !== 'pickupTimeMinutes'),
+    stored: [...Object.keys(updates), ...Object.keys(address)],
     missingDetails: missing,
     optionalDetails: optional,
     customerMessage: parts.join(' '),
@@ -184,4 +326,4 @@ function setCustomerDetails(args, ctx) {
 
 const handlers = { setCustomerDetails };
 
-module.exports = { declarations, handlers, missingDetails, optionalDetails, parseTimeOfDay, formatTime, validateName };
+module.exports = { declarations, handlers, missingDetails, optionalDetails, askText, parseTimeOfDay, formatTime, validateName, validatePhone, parseBlock };

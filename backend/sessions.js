@@ -16,7 +16,8 @@ function newOrderState() {
     orderType: null, // 'pickup' | 'delivery'
     pickupTime: null, // 'HH:MM' (24-hour), pickup orders only, optional
     pickupTimeDeclined: false, // the customer said they have no pickup time preference
-    customer: { name: null, phone: null, address: null },
+    addressExtrasDeclined: false, // delivery: the customer said no apartment/unit or instructions
+    customer: { name: null, phone: null, address: null }, // address (delivery): { block, house, street, apartment, landmark, instructions }
     discount: null,
     total: 0,
     confirmed: false,
