@@ -1,6 +1,8 @@
 // Tools the assistant can call (Gemini function calling). All validation is done here in code,
 // against data/menu.json, never by the model. Every tool returns { ok: true, ... } or { ok: false, error, customerMessage, internalNote }.
 const { loadMenu, loadRecommendations, loadPromotions } = require('./data');
+const { fail, normalize } = require('./fail');
+const checkout = require('./checkout');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
 
@@ -121,22 +123,7 @@ const TOOL_DECLARATIONS = [
       required: ['orderType']
     }
   }
-];
-
-// Every failure has two separate texts:
-//  - customerMessage: short, polite, safe to say to the customer (the model may translate it, but must not add internals)
-//  - internalNote: guidance for the model only; it must never be repeated to the customer
-const fail = (error, customerMessage, extra, internalNote) => ({
-  ok: false,
-  error,
-  customerMessage,
-  ...(internalNote ? { internalNote } : {}),
-  ...(extra || {})
-});
-
-function normalize(text) {
-  return typeof text === 'string' ? text.trim().toLowerCase() : '';
-}
+].concat(checkout.declarations);
 
 // Finds a menu item by id or exact name (case-insensitive). Returns null if there is no such item.
 function findMenuItem(menu, idOrName) {
@@ -445,7 +432,7 @@ function getRecommendations(args, ctx) {
   };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType };
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart, getRecommendations, applyPromotion, setOrderType, ...checkout.handlers };
 
 // ---- Promotions (rules live in data/promotions.json; all checks are done here in code) ----
 
@@ -560,8 +547,12 @@ function setOrderType(args, ctx) {
   const state = ctx.state;
   const changed = state.orderType !== orderType;
   state.orderType = orderType;
+  if (changed && orderType === 'delivery') {
+    state.pickupTime = null; // a pickup time never applies to delivery
+    state.pickupTimeDeclined = false;
+  }
   const note = refreshDiscount(state); // e.g. a pickup-only code stops applying when the customer switches to delivery
-  const result = { ok: true, orderType, changed, ...(note || {}) };
+  const result = { ok: true, orderType, changed, missingDetails: checkout.missingDetails(state), optionalDetails: checkout.optionalDetails(state), ...(note || {}) };
   result.customerMessage = `Got it: this order is for ${orderType}.`;
   if (note && note.discountRemoved) result.customerMessage += ` ${note.discountRemoved.customerMessage} ${note.discountRemoved.detail}`;
   if (note && note.discountUpdated) result.customerMessage += ` Your ${note.discountUpdated.code} discount is now ${note.discountUpdated.discountText}.`;

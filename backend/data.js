@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MENU_PATH = path.join(__dirname, '..', 'data', 'menu.json');
+const RESTAURANT_PATH = path.join(__dirname, '..', 'data', 'restaurant.json');
 const PROMOTIONS_PATH = path.join(__dirname, '..', 'data', 'promotions.json');
 const RECOMMENDATIONS_PATH = path.join(__dirname, '..', 'data', 'recommendations.json');
 
@@ -36,4 +37,16 @@ function loadPromotions() {
   return data;
 }
 
-module.exports = { loadMenu, loadRecommendations, loadPromotions };
+// Opening hours, delivery area and fee, tax rate: the facts code needs to validate orders.
+function loadRestaurant() {
+  const r = JSON.parse(fs.readFileSync(RESTAURANT_PATH, 'utf8'));
+  const okTime = (t) => typeof t === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(t);
+  if (!r || !r.hours || !okTime(r.hours.open) || !okTime(r.hours.close)
+    || !r.delivery || !Array.isArray(r.delivery.blocks) || !Number.isInteger(r.delivery.fee)
+    || !r.pickup || !Number.isInteger(r.pickup.fee) || typeof r.taxRate !== 'number') {
+    throw new Error('invalid restaurant data');
+  }
+  return r;
+}
+
+module.exports = { loadMenu, loadRecommendations, loadPromotions, loadRestaurant };

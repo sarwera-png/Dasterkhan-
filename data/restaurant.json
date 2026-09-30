@@ -1,0 +1,10 @@
+{
+  "name": "Karachi Dastarkhwan",
+  "area": "Gulshan-e-Iqbal",
+  "city": "Karachi",
+  "currency": "PKR",
+  "hours": { "open": "12:00", "close": "23:00" },
+  "delivery": { "blocks": [1, 2, 3, 4, 5], "fee": 150 },
+  "pickup": { "fee": 0 },
+  "taxRate": 0
+}

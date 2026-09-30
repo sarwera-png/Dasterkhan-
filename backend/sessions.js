@@ -14,6 +14,8 @@ function newOrderState() {
     lineCounter: 0, // used to give each cart line a unique lineId
     declinedSuggestions: [], // item ids the customer said no to (never suggested again in this session)
     orderType: null, // 'pickup' | 'delivery'
+    pickupTime: null, // 'HH:MM' (24-hour), pickup orders only, optional
+    pickupTimeDeclined: false, // the customer said they have no pickup time preference
     customer: { name: null, phone: null, address: null },
     discount: null,
     total: 0,
