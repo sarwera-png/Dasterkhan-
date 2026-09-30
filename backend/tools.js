@@ -71,6 +71,12 @@ const TOOL_DECLARATIONS = [
       },
       required: ['itemId']
     }
+  },
+  {
+    name: 'viewCart',
+    description:
+      'Get the current cart as an itemized summary (items, quantities and options). Call it whenever the customer asks what is in their cart or asks you to read the order back. ' +
+      'Never describe the cart from memory: always use this tool. It does not show prices or totals.'
   }
 ];
 
@@ -291,7 +297,27 @@ function removeItem(args, ctx) {
   return { ok: true, lineRemoved: false, removed, remainingLine: lineView(line), cartLineCount: cart.length };
 }
 
-const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem };
+function describeLine(line) {
+  const opts = Object.entries(line.options).map(([name, choice]) => `${name}: ${choice}`);
+  return `${line.quantity} x ${line.name}${opts.length ? ` (${opts.join(', ')})` : ''}`;
+}
+
+// Read-only: reports exactly what is stored in this session's order state.
+function viewCart(args, ctx) {
+  const cart = ctx.state.items;
+  if (cart.length === 0) {
+    return { ok: true, isEmpty: true, lineCount: 0, lines: [], summary: 'The cart is empty.' };
+  }
+  return {
+    ok: true,
+    isEmpty: false,
+    lineCount: cart.length,
+    lines: cart.map((line) => ({ ...lineView(line), text: describeLine(line) })),
+    summary: cart.map(describeLine).join('\n')
+  };
+}
+
+const HANDLERS = { getMenu, addItemToCart, modifyItem, removeItem, viewCart };
 
 // Runs one tool call for one session. ctx = { state } is the current session's order state only.
 function executeTool(name, args, ctx) {
