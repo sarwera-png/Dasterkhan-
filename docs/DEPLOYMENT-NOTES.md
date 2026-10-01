@@ -14,12 +14,12 @@ What is already in the repo: `api/index.js` (thin entry that exports the same Ex
    - `GEMINI_FALLBACK_MODELS` (optional)
    - `GEMINI_COOLDOWN_SECONDS` (optional, default 60)
    - `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` (optional extra provider, see section 5b; all three or none)
-   - Do **not** set `ORDERS_ENABLED` (ordering stays off: the public demo takes no orders).
-   - Do **not** set `STAFF_PASSWORD` (the staff dashboard stays locked with 403).
+   - `ORDERS_ENABLED` set to `true` and `ORDER_CHANNEL` set to `whatsapp`, with `WHATSAPP_ORDER_NUMBER` (the number that receives the demo orders; written like `03XXXXXXXXX`, `+923XXXXXXXXX` or `923XXXXXXXXX`). With the WhatsApp channel nothing is stored, see section 2. Without the WhatsApp settings keep `ORDERS_ENABLED` unset (ordering off).
+   - Do **not** set `STAFF_PASSWORD` (the staff dashboard stays closed with 403; there is nothing in it on Vercel anyway).
 4. Deploy, open the URL, check: website loads, chat answers, no "Confirm order" button, `/staff` shows 403.
 5. The function limit is 60 s (`maxDuration` in `vercel.json`). On Vercel the app's own per-message deadline is 55 s (80 s locally); each model attempt is still limited to 20 s.
 
-Public demo environment variables: set `GEMINI_API_KEY`, `SESSION_SECRET`, and optionally `GEMINI_FALLBACK_MODELS` and `EXTRA_AI_BASE_URL` / `EXTRA_AI_API_KEY` / `EXTRA_AI_MODELS`. Leave `ORDERS_ENABLED` and `STAFF_PASSWORD` **unset**.
+Public demo environment variables: set `GEMINI_API_KEY`, `SESSION_SECRET`, `ORDERS_ENABLED=true`, `ORDER_CHANNEL=whatsapp`, `WHATSAPP_ORDER_NUMBER`, and optionally `GEMINI_FALLBACK_MODELS` and `EXTRA_AI_BASE_URL` / `EXTRA_AI_API_KEY` / `EXTRA_AI_MODELS`. Leave `STAFF_PASSWORD` **unset**.
 
 Sessions on Vercel: the order state (cart, details, review) is sealed by the server with AES-256-GCM using `SESSION_SECRET` and returned to the browser with every answer; the browser sends it back, so any instance can continue the same cart. The browser cannot read or change it (a changed, expired (2 hours) or foreign token simply starts a fresh empty session). Only the order state is inside it, no conversation text. If `SESSION_SECRET` is missing on Vercel the chat refuses (503) instead of running without it. If you change `SESSION_SECRET`, open carts are reset. The model cooldown is still per instance. Orders cannot be saved at all (section 2).
 
@@ -40,7 +40,16 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 - **Timeouts:** one chat request may try up to three models (20 s each, 80 s total). Function time limits on the chosen plan must allow this, or the limits need revisiting.
 - **HTTPS and proxy:** Vercel terminates HTTPS in front of the app (see section 4 for what that means for the staff lockout).
 
-## 2. Why the live site must run with ORDERS_ENABLED unset
+## 2a. WhatsApp ordering for the public demo (no storage)
+
+With `ORDER_CHANNEL=whatsapp` the customer presses **Confirm order** (same gate as always: exact review, confirmed address) and the site shows a green **Open WhatsApp** button. The link `https://wa.me/<number>?text=...` opens WhatsApp with the order text already written by the server from the verified review: first line `[DEMO] کراچی دسترخوان — کورس کا ٹیسٹ آرڈر`, a random reference like `KD-7F3A9`, items, totals, name, phone and address or pickup time, payment. **Nothing is saved on the server and nothing is sent by the site**: the order exists only when the customer presses Send in WhatsApp. The screen says "NOT sent yet" until then and never says "received" or "placed".
+
+- The number rule: `03XXXXXXXXX`, `+923XXXXXXXXX` and `923XXXXXXXXX` (spaces and dashes ignored) all become `923XXXXXXXXX`. A missing or invalid number makes the site refuse to confirm (503 `whatsapp_not_configured`); the number is never logged.
+- With `ORDER_CHANNEL` left at `file` on Vercel, confirm is refused (503 `file_orders_not_supported_on_vercel`) because files are not durable there.
+- The receiving number is the owner's business number, which also serves another business. Demo orders arrive with the `[DEMO]` header. **Never set a WhatsApp auto-reply that says "demo"** (it would answer real customers of the other business). Tell staff that messages starting with `[DEMO]` are test orders.
+- A permanent notice in the chat asks visitors not to enter real personal information; everything typed is still sent to the AI provider and, in the WhatsApp text, to that number.
+
+## 2. Why the file channel must stay off on the public site
 
 - Ordering is **off by default**: only the exact text `true` turns it on. Unset (or anything else) means demo mode: chat, menu, cart, totals and order review work, but there is no Confirm order button and the confirm endpoint answers `503 ordering_disabled` and writes nothing.
 - On serverless, a confirmed order could not be stored safely (section 1), so a customer would be told "order placed" for an order the restaurant never receives. Keeping the switch off makes this impossible.
@@ -53,7 +62,9 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 |---|---|
 | `GEMINI_API_KEY` | the chat assistant (server side only; without it chat answers with a safe "please contact staff" message) |
 | `STAFF_PASSWORD` | the staff dashboard (without it `/staff` is locked with HTTP 403) |
-| `ORDERS_ENABLED` | leave **unset** on the public site (section 2) |
+| `ORDERS_ENABLED` | master ordering switch; `true` on the public demo only together with `ORDER_CHANNEL=whatsapp` (section 2a) |
+| `ORDER_CHANNEL` | `file` (default, local `data/orders.json`) or `whatsapp` (link, nothing stored) |
+| `WHATSAPP_ORDER_NUMBER` | receiving number for the WhatsApp channel |
 | `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS` | optional; defaults are in `.env.example` |
 | `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` | optional extra AI provider (OpenAI-compatible, e.g. Groq), used only after all Gemini models fail; all three or it stays off |
 | `SESSION_SECRET` | seals the session token (32+ random characters); required on Vercel, optional locally (a per-run secret is generated) |
@@ -92,7 +103,7 @@ Purpose: when the free Gemini quota is used up (429), the app can try one more p
 ## 6. Recommended order of work for guide Prompts 36-37
 
 1. Decide with the owner whether a public site is wanted at all, or if a local/classroom demo is enough (if so, stop here).
-2. Keep the live build in demo mode (`ORDERS_ENABLED` unset); run the real-Gemini checklist on the owner's laptop first.
+2. Run the real-Gemini checklist on the owner's laptop first, then deploy the demo with the WhatsApp channel (section 2a).
 3. Replace `data/orders.json` and in-memory sessions with a real database (this is the V2 work that unlocks ordering).
 4. Adapt the Express app for Vercel (handler export, static files, config) and test a preview deployment.
 5. Protect `/staff` (correct proxy setting, provider protection, strong password) and add a per-visitor rate limit to the chat.
