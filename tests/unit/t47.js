@@ -53,8 +53,8 @@ function setEnv(url, models, key) { if (arguments.length < 3) key = KEY; const p
   // 5) cooldown on 429 / 503 / Retry-After, same cooldown mechanism
   process.env.GEMINI_COOLDOWN_SECONDS = '1'; cooldown._reset(); behave = (j2, n) => (j2.model === 'model-a' ? { status: 429, headers: { 'Retry-After': '2' }, body: {} } : textMsg('from b'));
   r = await ask('one'); assert.strictEqual(r.json.reply, 'from b'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-a', 'model-b']);
-  await sleep(1150); r = await ask('two'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-b'], 'Retry-After 2 s keeps model-a skipped'); assert(logs.some(l => /^Extra AI skip: model=model-a \(cooldown \ds\)$/.test(l)));
-  await sleep(1100); r = await ask('three'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-a', 'model-b'], 'tried again after the window');
+  await sleep(1150); r = await ask('two'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-b'], 'Retry-After 2 s keeps model-a skipped'); assert(logs.some(l => /^Extra AI skip: model=model-a \(cooldown \ds, level 1\)$/.test(l)));
+  await sleep(1100); r = await ask('three'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-a', 'model-b'], 'tried again after the window'); // (its repeated 429 now starts the next level)
   cooldown._reset(); behave = (j2) => (j2.model === 'model-a' ? { status: 503, body: {} } : textMsg('from b')); await ask('x'); r = await ask('y'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-b']);
   cooldown._reset(); behave = () => ({ status: 500, body: {} }); await ask('x'); r = await ask('y'); assert.deepStrictEqual(requests.map(x => x.json.model), ['model-a', 'model-b'], '500 does not start a cooldown');
   process.env.GEMINI_COOLDOWN_SECONDS = '0'; cooldown._reset();

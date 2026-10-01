@@ -293,7 +293,7 @@ app.post('/api/chat', async (req, res) => {
     const model = chain[modelIndex];
     const left = cooldown.secondsLeft(model);
     if (left > 0 && !(attempts === 0 && soonest === model)) {
-      console.log(`${label(model)} skip: model=${shown(model)} (cooldown ${left}s)`);
+      console.log(`${label(model)} skip: model=${shown(model)} (cooldown ${left}s, level ${cooldown.levelOf(model)})`);
       modelIndex += 1;
       continue;
     }

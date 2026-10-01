@@ -13,14 +13,14 @@ const with429 = (headers) => () => { const e = L.err(429); if (headers) e.header
   // 1) 429 on model 1 -> skipped inside the window, retried after it
   process.env.GEMINI_COOLDOWN_SECONDS = '1'; cooldown._reset(); behave = { [M1]: { error: with429() } };
   let a = await ask(); assert.deepStrictEqual(a.tried, [M1, M2]); assert.strictEqual(a.r.json.reply, 'ok from ' + M2); assert.deepStrictEqual(a.skips, []);
-  a = await ask(); assert.deepStrictEqual(a.tried, [M2]); assert.deepStrictEqual(a.skips, [`Gemini skip: model=${M1} (cooldown 1s)`]); assert.strictEqual(a.r.json.reply, 'ok from ' + M2);
+  a = await ask(); assert.deepStrictEqual(a.tried, [M2]); assert.deepStrictEqual(a.skips, [`Gemini skip: model=${M1} (cooldown 1s, level 1)`]); assert.strictEqual(a.r.json.reply, 'ok from ' + M2);
   await sleep(1150); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M2]); assert.deepStrictEqual(a.skips, []);
-  behave = {}; await sleep(1150); a = await ask(); assert.deepStrictEqual(a.tried, [M1]); assert.strictEqual(a.r.json.reply, 'ok from ' + M1);
+  cooldown._reset(); /* the repeated 429 above escalated the level; start over for the recovery check */ behave = {}; a = await ask(); assert.deepStrictEqual(a.tried, [M1]); assert.strictEqual(a.r.json.reply, 'ok from ' + M1);
   console.log('1) 429 on the first model: the next request skips it (one log line "Gemini skip: model=... (cooldown 1s)"), after the window it is tried again first, and once it works again it answers: PASS');
   // 2) 503 cools too; 500 / timeout / other statuses do not; order of the rest unchanged
   cooldown._reset(); behave = { [M1]: { error: () => L.err(503) } }; await ask(); a = await ask(); assert.deepStrictEqual(a.tried, [M2]);
   cooldown._reset(); behave = { [M1]: { error: () => L.err(500) } }; await ask(); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M2], '500 does not start a cooldown'); assert.deepStrictEqual(a.skips, []);
-  cooldown._reset(); behave = { [M2]: { error: with429() }, [M1]: { error: () => L.err(500) } }; await ask(); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M3], 'M2 skipped, the rest keep their order'); assert.deepStrictEqual(a.skips, [`Gemini skip: model=${M2} (cooldown 1s)`]); assert.strictEqual(a.r.json.reply, 'ok from ' + M3);
+  cooldown._reset(); behave = { [M2]: { error: with429() }, [M1]: { error: () => L.err(500) } }; await ask(); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M3], 'M2 skipped, the rest keep their order'); assert.deepStrictEqual(a.skips, [`Gemini skip: model=${M2} (cooldown 1s, level 1)`]); assert.strictEqual(a.r.json.reply, 'ok from ' + M3);
   console.log('2) 503 also starts a cooldown, 500 does not; with only the middle model cooling the order of the others is unchanged (model 1, then model 3): PASS');
   // 3) all cooling -> exactly one real attempt, on the one whose cooldown ends first
   process.env.GEMINI_COOLDOWN_SECONDS = '30'; cooldown._reset(); behave = { [M1]: { error: with429() }, [M2]: { error: with429() }, [M3]: { error: () => L.err(503) } };
@@ -35,10 +35,10 @@ const with429 = (headers) => () => { const e = L.err(429); if (headers) e.header
   console.log('3b) a cooling model picked as the forced attempt can answer a tool call and the next round of the same message still uses it; answering clears its cooldown: PASS');
   // 4) Retry-After wins, capped at 5 minutes
   process.env.GEMINI_COOLDOWN_SECONDS = '1'; cooldown._reset(); behave = { [M1]: { error: with429({ 'retry-after': '2' }) } }; await ask(); await sleep(1150); a = await ask(); assert.deepStrictEqual(a.tried, [M2], 'Retry-After 2 s is longer than the 1 s default'); await sleep(1100); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M2]);
-  cooldown._reset(); cooldown.markCooling(M1, 429, cooldown.retryAfterSeconds({ headers: { 'retry-after': '99999' } })); assert(cooldown.secondsLeft(M1) >= 299 && cooldown.secondsLeft(M1) <= 300); cooldown._reset();
+  cooldown._reset(); cooldown.markCooling(M1, 429, cooldown.retryAfterSeconds({ headers: { 'retry-after': '99999' } })); assert(cooldown.secondsLeft(M1) >= 1799 && cooldown.secondsLeft(M1) <= 1800); cooldown._reset();
   cooldown.markCooling(M1, 429, cooldown.retryAfterSeconds({ response: { headers: new Headers({ 'Retry-After': '7' }) } })); assert(cooldown.secondsLeft(M1) >= 6 && cooldown.secondsLeft(M1) <= 7);
   assert.strictEqual(cooldown.retryAfterSeconds({ headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } }), null); assert.strictEqual(cooldown.retryAfterSeconds(new Error('x')), null);
-  console.log('4) a numeric Retry-After is used (2 s beat the 1 s default), capped at 300 s; dates or missing headers fall back to the default: PASS');
+  console.log('4) a numeric Retry-After is used (2 s beat the 1 s default), capped at 30 min; dates or missing headers fall back to the default: PASS');
   // 5) env var: default 60, 0 = off, invalid -> 60, capped at 300
   for (const [v, want] of [[undefined, 60], ['', 60], ['abc', 60], ['-5', 60], ['1.5', 60], ['0', 0], ['90', 90], ['9999', 300]]) { if (v === undefined) delete process.env.GEMINI_COOLDOWN_SECONDS; else process.env.GEMINI_COOLDOWN_SECONDS = v; assert.strictEqual(cooldown.cooldownSeconds(), want, String(v)); }
   process.env.GEMINI_COOLDOWN_SECONDS = '0'; cooldown._reset(); behave = { [M1]: { error: with429() } }; await ask(); a = await ask(); assert.deepStrictEqual(a.tried, [M1, M2], 'cooldown off'); 
