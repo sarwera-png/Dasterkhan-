@@ -27,6 +27,8 @@ const MAX_HISTORY_ITEMS = 10;
 const REQUEST_TIMEOUT_MS = 20000;
 const MAX_TOOL_ROUNDS = 4; // hard limit of tool-call rounds per customer message (free tier: ~5 requests/minute per model)
 const TOTAL_DEADLINE_MS = 80000; // stay under the browser's 90 s timeout
+const VERCEL_DEADLINE_MS = 55000; // on Vercel the function limit is 60 s (vercel.json maxDuration)
+const totalDeadlineMs = () => (process.env.VERCEL ? VERCEL_DEADLINE_MS : TOTAL_DEADLINE_MS);
 const URDU_SCRIPT = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
 // Added to the model's instructions for every request while ordering is off (demo mode).
 const ORDERING_OFF_NOTE = [
@@ -284,7 +286,7 @@ app.post('/api/chat', async (req, res) => {
   if (soonest) modelIndex = chain.indexOf(soonest);
 
   while (modelIndex < chain.length) {
-    if (Date.now() - startedAt > TOTAL_DEADLINE_MS) {
+    if (Date.now() - startedAt > totalDeadlineMs()) {
       console.error('Gemini: time limit reached');
       break;
     }
@@ -300,7 +302,7 @@ app.post('/api/chat', async (req, res) => {
     let toolCallsRun = 0;
     let failure = null;
     while (true) {
-      if (Date.now() - startedAt > TOTAL_DEADLINE_MS) { failure = 'deadline'; break; }
+      if (Date.now() - startedAt > totalDeadlineMs()) { failure = 'deadline'; break; }
       attempts += 1;
       const result = await attemptEntry(model, contents, systemInstruction);
       if (!result.response) {
@@ -465,4 +467,5 @@ if (!process.env.VERCEL) {
   });
 }
 
+app.totalDeadlineMs = totalDeadlineMs; // read by the tests
 module.exports = app;
