@@ -5,6 +5,7 @@
 //   --retry-wait=N seconds to wait before retrying a message after 429/503 (default: the delay, at least 30)
 //   LIVE_DEBUG=1   (environment variable) also shows the server's own log lines
 //   --out-dir=DIR  where to write the results file (default tests/live-results/, git-ignored)
+// ORDER_CHANNEL / WHATSAPP_ORDER_NUMBER from your .env are ignored: S1-S6 force the file channel (temporary file), S7 uses a test number.
 // It starts its OWN server on port 3100 with a TEMPORARY orders file (never data/orders.json, never port 3000),
 // ORDERS_ENABLED=true and a random staff password that lives only in memory. It never prints keys or passwords.
 // PASS/FAIL comes from the server's own data (cart, totals, review, confirm answer, orders file, staff API), not from the model's wording,
@@ -28,7 +29,9 @@ const out = (s) => process.stdout.write(s + '\n');
 
 // ---------- secrets stay in memory; the output is scrubbed just in case ----------
 const STAFF_PW = crypto.randomBytes(18).toString('hex');
-const secrets = () => [process.env.GEMINI_API_KEY, process.env.EXTRA_AI_API_KEY, STAFF_PW].filter((s) => s && s.length >= 6);
+// The owner's real WhatsApp number (if his .env has one) is never used by this script and is scrubbed from any output.
+const OWNER_NUMBER = String(process.env.WHATSAPP_ORDER_NUMBER || '').trim(); const ownerDigits = OWNER_NUMBER.replace(/\D/g, '');
+const secrets = () => [process.env.GEMINI_API_KEY, process.env.EXTRA_AI_API_KEY, STAFF_PW, OWNER_NUMBER, ownerDigits, ownerDigits.replace(/^0/, '92')].filter((s) => s && s.length >= 6);
 const scrub = (s) => secrets().reduce((t, sec) => t.split(sec).join('***'), String(s));
 
 // ---------- stub model (only with --stub) ----------
@@ -124,7 +127,9 @@ if (PROVIDER === 'extra') process.env.GEMINI_API_KEY = ''; // Gemini off
 
 // ---------- own server: temp orders file, ordering on, random staff password ----------
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kd-live-')); const ordersFile = path.join(tmp, 'orders.json'); fs.writeFileSync(ordersFile, '[]');
-Object.assign(process.env, { PORT: String(PORT), ORDERS_ENABLED: 'true', STAFF_PASSWORD: STAFF_PW });
+// The own server always uses the FILE channel (a temporary orders file), whatever the owner's .env says; only S7 switches to a test WhatsApp number
+// for a moment. The owner's number is blanked (not deleted, so the server's own .env loading cannot bring it back).
+Object.assign(process.env, { PORT: String(PORT), ORDERS_ENABLED: 'true', STAFF_PASSWORD: STAFF_PW, ORDER_CHANNEL: 'file', WHATSAPP_ORDER_NUMBER: '' });
 require(path.join(ROOT, 'backend', 'orders')).setOrdersPathForTests(ordersFile);
 const realLog = { log: console.log, error: console.error, warn: console.warn }; const serverLog = []; // the server's own log lines are kept only to learn which provider/model answered (names only)
 console.log = (l) => { serverLog.push(String(l)); if (process.env.LIVE_DEBUG) realLog.log(l); }; console.error = (l) => { serverLog.push(String(l)); if (process.env.LIVE_DEBUG) realLog.error(l); }; console.warn = () => {}; // the server's own log lines are not part of this report (LIVE_DEBUG=1 shows them)
