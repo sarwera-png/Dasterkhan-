@@ -60,6 +60,39 @@
     return bubble;
   }
 
+  // Panel with the WhatsApp button and the message text. Plain text and DOM nodes only, never innerHTML.
+  function addWhatsappPanel(wa) {
+    var panel = document.createElement('div');
+    panel.className = 'wa-panel';
+    var link = document.createElement('a');
+    link.className = 'wa-open';
+    link.href = wa.link;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    var en = document.createElement('span');
+    en.textContent = 'Open WhatsApp';
+    var ur = document.createElement('span');
+    ur.className = 'ur';
+    ur.setAttribute('lang', 'ur');
+    ur.setAttribute('dir', 'rtl');
+    ur.textContent = 'واٹس ایپ کھولیں';
+    link.appendChild(en);
+    link.appendChild(document.createTextNode(' '));
+    link.appendChild(ur);
+    var label = document.createElement('div');
+    label.className = 'wa-label';
+    label.textContent = 'Order text (you can copy it) / آرڈر کا متن (کاپی کر سکتے ہیں)';
+    var text = document.createElement('pre');
+    text.className = 'wa-text';
+    text.setAttribute('dir', 'auto');
+    text.textContent = wa.message;
+    panel.appendChild(link);
+    panel.appendChild(label);
+    panel.appendChild(text);
+    messages.appendChild(panel);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
   // Safety net for assistant replies only: drop bold markers (** and __) if the model uses them anyway.
   function stripMarkdownMarkers(text) {
     return text
@@ -192,6 +225,10 @@
         var text = data && typeof data.customerMessage === 'string' && data.customerMessage.trim() !== '' ? data.customerMessage : GENERIC_ERROR;
         // The wording always comes from the server: it only talks about a saved order when it has a saved order number.
         addMessage(text, 'bot');
+        // WhatsApp channel: the order is NOT sent yet. Show the button that opens WhatsApp with the prepared text, and the text itself for copying.
+        if (data && data.whatsapp && typeof data.whatsapp.link === 'string' && data.whatsapp.link.indexOf('https://wa.me/') === 0 && typeof data.whatsapp.message === 'string') {
+          addWhatsappPanel(data.whatsapp);
+        }
         reviewVersion = null; // the button disappears after an answer; a new review brings it back
       })
       .catch(function () {

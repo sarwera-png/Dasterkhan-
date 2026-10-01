@@ -7,7 +7,8 @@ const sessionToken = require('./session-token');
 const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
-const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
+const { ordersEnabled, orderChannel, ORDERING_DISABLED_MESSAGE } = require('./config');
+const whatsapp = require('./whatsapp');
 const { guardReply, cleanUrdu } = require('./guard');
 const cooldown = require('./cooldown');
 const extraAi = require('./extra-ai');
@@ -35,6 +36,12 @@ const ORDERING_OFF_NOTE = [
   '## Ordering status: ONLINE ORDERING IS OFF (demo)',
   'Customers can browse the menu, build a cart, see prices and totals and get an order review, but orders cannot be placed right now. There is no "Confirm order" button and nothing can be confirmed or saved.',
   'After showing a review, or whenever the customer wants to place the order, tell them in their own language that this is a demo and orders cannot be placed right now. Never say or imply that an order was placed, confirmed, saved or sent, and never tell the customer to press a button. This overrides the parts of the order review steps that mention the "Confirm order" button.'
+].join('\n');
+// Added to the model's instructions while orders go out by WhatsApp.
+const WHATSAPP_NOTE = [
+  '## Order channel: WhatsApp (demo)',
+  'After the customer presses the "Confirm order" button, the screen shows a button that opens WhatsApp with the order text prepared. The order is only sent when the customer presses Send in WhatsApp, and you cannot see whether they did.',
+  'Never say or imply that an order was placed, confirmed, sent, received or saved. You may tell the customer to press "Confirm order", then open WhatsApp and press Send. If they ask whether it was sent, say you cannot know and that it is sent only when they press Send in WhatsApp.'
 ].join('\n');
 const URDU_SCRIPT_NOTE = "The customer's latest message is written in Urdu script. Reply in Urdu script.";
 const FALLBACK_REPLY = 'Please try again or contact staff.';
@@ -176,12 +183,14 @@ function validReviewVersion(state) {
   try {
     if (!ordersEnabled() || state.status !== 'draft' || !state.reviewShownVersion) return null; // no button while ordering is off
     const built = buildReview(state, reviewData());
+    if (built.ok && built.review.reviewVersion === state.reviewShownVersion && state.whatsappVersion === state.reviewShownVersion && orderChannel() === 'whatsapp') return null; // the link for this review already exists
     return built.ok && built.review.reviewVersion === state.reviewShownVersion ? built.review.reviewVersion : null;
   } catch (err) {
     return null;
   }
 }
 
+const WHATSAPP_PENDING_MESSAGE = 'Your order is NOT sent yet. Press the button to open WhatsApp, then press Send.\nآپ کا آرڈر ابھی نہیں گیا۔ بٹن دبا کر WhatsApp کھولیں، پھر Send دبائیں۔';
 const SESSION_NOT_CONFIGURED_REPLY = 'Sorry, the assistant is not set up correctly right now. Please contact the restaurant.';
 
 // The session for one request. A valid token (sealed by this app with SESSION_SECRET) is the source of truth for the order state; a token that is
@@ -256,6 +265,8 @@ app.post('/api/chat', async (req, res) => {
 
   if (!ordersEnabled()) {
     systemInstruction += '\n\n' + ORDERING_OFF_NOTE;
+  } else if (orderChannel() === 'whatsapp') {
+    systemInstruction += '\n\n' + WHATSAPP_NOTE;
   }
 
   // For this request only: remind the model of the script of the latest message (history can pull it the other way).
@@ -388,6 +399,14 @@ app.post('/api/order/confirm', (req, res) => {
   if (!sessionToken.isConfigured()) {
     return reject(503, 'session_not_configured', SESSION_NOT_CONFIGURED_REPLY);
   }
+  // The channel must be usable, otherwise nothing is confirmed (fail closed).
+  const channel = orderChannel();
+  if (channel === 'file' && process.env.VERCEL) {
+    return reject(503, 'file_orders_not_supported_on_vercel', 'Sorry, orders cannot be placed on this site right now.');
+  }
+  if (channel === 'whatsapp' && !whatsapp.orderNumber()) {
+    return reject(503, 'whatsapp_not_configured', 'Sorry, orders cannot be sent right now.');
+  }
   if (typeof reviewVersion !== 'string' || !/^[0-9a-f]{16}$/.test(reviewVersion) || (typeof requestedToken !== 'string' && typeof sessionId !== 'string')) {
     return reject(400, 'bad_request', 'Sorry, something went wrong. Please try again.');
   }
@@ -425,6 +444,18 @@ app.post('/api/order/confirm', (req, res) => {
   }
   if (state.reviewShownVersion !== reviewVersion) {
     return reject(409, 'review_not_shown', 'Please review your order in the chat before confirming it.');
+  }
+
+  if (channel === 'whatsapp') {
+    // No storage: a wa.me link whose text is written by code from this verified review. The same review always gives the same link and reference.
+    if (!(state.whatsappVersion === reviewVersion && state.whatsappLink)) {
+      const ref = whatsapp.newRef();
+      const message = whatsapp.buildMessage(built.review, state, loadRestaurant(), ref);
+      if (message.length > whatsapp.MAX_MESSAGE_CHARS) return reject(409, 'order_too_large', 'This order is too long to send by WhatsApp. Please ask the restaurant.');
+      state.whatsappVersion = reviewVersion; state.whatsappRef = ref; state.whatsappMessage = message; state.whatsappLink = whatsapp.buildLink(whatsapp.orderNumber(), message);
+    }
+    console.log('Order confirm: WhatsApp link ready');
+    return res.json(withToken({ ok: true, channel: 'whatsapp', sent: false, confirmed: false, saved: false, whatsapp: { link: state.whatsappLink, ref: state.whatsappRef, message: state.whatsappMessage }, customerMessage: WHATSAPP_PENDING_MESSAGE }));
   }
 
   // Save first. Only a saved order counts: if the save fails nothing is confirmed and no receipt is shown.

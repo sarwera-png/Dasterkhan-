@@ -6,6 +6,11 @@ function ordersEnabled() {
   return process.env.ORDERS_ENABLED === 'true';
 }
 
+// How a confirmed order leaves the app: "file" (saved to data/orders.json, the default) or "whatsapp" (a wa.me link, nothing stored).
+function orderChannel() {
+  return String(process.env.ORDER_CHANNEL || '').trim().toLowerCase() === 'whatsapp' ? 'whatsapp' : 'file';
+}
+
 const ORDERING_DISABLED_MESSAGE = 'This is a demo, so orders cannot be placed right now.';
 
-module.exports = { ordersEnabled, ORDERING_DISABLED_MESSAGE };
+module.exports = { ordersEnabled, orderChannel, ORDERING_DISABLED_MESSAGE };

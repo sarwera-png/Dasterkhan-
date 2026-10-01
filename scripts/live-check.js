@@ -271,6 +271,27 @@ async function S6() {
   const ok = await confirmCall(fx.sid, fx.version); s.record('2 same request while on', 'the same valid request now saves (so the refusal came from the switch only)', `status=${ok.status} saved=${ok.json.saved} records=${orders().length}`, ok.status === 200 && ok.json.saved === true && orders().length === before + 1);
 }
 
+// S7: the WhatsApp order channel, judged from the server's own answers only (test number, inside this process; nothing is sent anywhere).
+async function S7() {
+  const s = new Scenario('S7 whatsapp');
+  const keep = { channel: process.env.ORDER_CHANNEL, number: process.env.WHATSAPP_ORDER_NUMBER, vercel: process.env.VERCEL, secret: process.env.SESSION_SECRET };
+  const restore = () => { for (const [k, v] of [['ORDER_CHANNEL', keep.channel], ['WHATSAPP_ORDER_NUMBER', keep.number], ['VERCEL', keep.vercel], ['SESSION_SECRET', keep.secret]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } };
+  try {
+    process.env.ORDER_CHANNEL = 'whatsapp'; process.env.WHATSAPP_ORDER_NUMBER = '03001234567';
+    const made = sessions.getOrCreateSession(undefined); const st = made.state; const r = (n, a) => executeTool(n, a, { state: st });
+    r('addItemToCart', { itemId: 'BRY01', quantity: 1, options: [{ name: 'spice', choice: 'mild' }] }); r('addItemToCart', { itemId: 'RAI01', quantity: 1 }); r('setOrderType', { orderType: 'pickup' }); r('setCustomerDetails', { name: 'Fixture Wa' });
+    const b = reviewNow(st); if (!b.ok) throw new Error('review not ready'); st.reviewShownVersion = b.review.reviewVersion;
+    const before = fs.readFileSync(ordersFile); const one = await confirmCall(made.sessionId, b.review.reviewVersion); const wa = one.json.whatsapp || {};
+    const text = (() => { try { return decodeURIComponent(String(wa.link).split('?text=')[1] || ''); } catch (e) { return ''; } })();
+    s.record('1 confirm -> link', 'wa.me link for 923001234567, nothing sent (sent=false) and nothing saved', `status=${one.status} sent=${one.json.sent} saved=${one.json.saved} link=${String(wa.link || '').startsWith('https://wa.me/923001234567?text=') ? 'wa.me/923001234567' : 'wrong'}`, one.status === 200 && one.json.sent === false && one.json.saved === false && String(wa.link || '').startsWith('https://wa.me/923001234567?text='));
+    s.record('2 text from the review', 'first line is the [DEMO] header, a Ref line, and the total equals the review (' + b.review.totals.total + ' PKR)', `header=${text.split('\n')[0] === '[DEMO] کراچی دسترخوان — کورس کا ٹیسٹ آرڈر'} ref=${/^Ref: KD-[0-9A-F]{5}$/.test(text.split('\n')[1] || '')} total=${text.includes('Total: ' + b.review.totals.total + ' PKR')}`, text.split('\n')[0] === '[DEMO] کراچی دسترخوان — کورس کا ٹیسٹ آرڈر' && /^Ref: KD-[0-9A-F]{5}$/.test(text.split('\n')[1] || '') && text.includes('Total: ' + b.review.totals.total + ' PKR') && text.includes('1 x Raita - 80 PKR'));
+    s.record('3 orders file unchanged', 'the temporary orders file is byte-identical (no order saved)', `identical=${Buffer.compare(before, fs.readFileSync(ordersFile)) === 0}`, Buffer.compare(before, fs.readFileSync(ordersFile)) === 0);
+    const two = await confirmCall(made.sessionId, b.review.reviewVersion); s.record('4 same version twice', 'the same link and reference again', `same=${two.json.whatsapp && two.json.whatsapp.link === wa.link && two.json.whatsapp.ref === wa.ref}`, two.status === 200 && !!two.json.whatsapp && two.json.whatsapp.link === wa.link && two.json.whatsapp.ref === wa.ref);
+    process.env.ORDER_CHANNEL = 'file'; process.env.VERCEL = '1'; process.env.SESSION_SECRET = crypto.randomBytes(24).toString('hex');
+    const vf = await confirmCall(made.sessionId, b.review.reviewVersion); s.record('5 file channel on Vercel', '503 file_orders_not_supported_on_vercel (fail closed)', `status=${vf.status} error=${vf.json.error}`, vf.status === 503 && vf.json.error === 'file_orders_not_supported_on_vercel');
+  } catch (e) { s.record('crash', 'no error', 'error: ' + e.message, false); } finally { restore(); }
+}
+
 function report() {
   const w = [14, 36, 52, 52, 4]; const pad = (t, n) => { t = scrub(t); return t.length > n ? t.slice(0, n - 1) + '…' : t.padEnd(n); };
   const lines = [`Live check (${STUB ? 'STUB model' : 'REAL model'}) - provider=${PROVIDER} - ${new Date().toISOString()} - delay ${DELAY_S}s`, `Extra models: ${(require(path.join(ROOT, 'backend', 'extra-ai')).config() || { models: [] }).models.join(', ') || '(none)'}`, '', ['Scenario', 'Step', 'Expected', 'Actual', ''].map((h, i) => pad(h, w[i])).join(' | ')];
@@ -289,7 +310,7 @@ function report() {
 (async () => {
   await sleep(0.6);
   out(`Live check starting (${STUB ? 'stub model' : 'real model'}, provider=${PROVIDER}); own server on port ${PORT}, temporary orders file, delay ${DELAY_S}s between messages. Please wait...`);
-  for (const sc of [S1, S2, S3, S4, S5, S6]) { try { await sc(); } catch (e) { rows.push({ sc: sc.name.replace(/^S(\d)$/, 'S$1'), step: 'crash', expected: 'no error', actual: scrub(e.message), pass: false }); } out(`  ${sc.name} done`); }
+  for (const sc of [S1, S2, S3, S4, S5, S6, S7]) { try { await sc(); } catch (e) { rows.push({ sc: sc.name.replace(/^S(\d)$/, 'S$1'), step: 'crash', expected: 'no error', actual: scrub(e.message), pass: false }); } out(`  ${sc.name} done`); }
   const { text, fail } = report();
   const dir = typeof args['out-dir'] === 'string' ? args['out-dir'] : path.join(ROOT, 'tests', 'live-results'); fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `live-check-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`); fs.writeFileSync(file, text + '\n');

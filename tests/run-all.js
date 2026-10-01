@@ -17,7 +17,7 @@ for (const [name, args] of steps) { const r = spawnSync('node', args, { cwd: ROO
 // UI tests run against a real server that has no Gemini key
 const UI_PORT = 3013; const server = require('child_process').spawn('node', ['backend/server.js'], { cwd: ROOT, env: { ...env, PORT: String(UI_PORT), GEMINI_API_KEY: '', ORDERS_ENABLED: '' }, stdio: 'ignore' });
 setTimeout(() => {
-  for (const f of ['ui_confirm.js', 'ui_layout.js', 'page_width.js']) { const r = spawnSync('node', [`tests/ui/${f}`], { cwd: ROOT, env: { ...env, UI_BASE: `http://localhost:${UI_PORT}` }, encoding: 'utf8', timeout: 240000 }); report(`ui/${f}`, r.status === 0, (r.stdout || '') + (r.stderr || '')); }
+  for (const f of ['ui_confirm.js', 'ui_layout.js', 'ui_whatsapp.js', 'page_width.js']) { const r = spawnSync('node', [`tests/ui/${f}`], { cwd: ROOT, env: { ...env, UI_BASE: `http://localhost:${UI_PORT}` }, encoding: 'utf8', timeout: 240000 }); report(`ui/${f}`, r.status === 0, (r.stdout || '') + (r.stderr || '')); }
   server.kill();
   const r = spawnSync('bash', ['tests/regression.sh'], { cwd: ROOT, env, encoding: 'utf8', timeout: 120000 }); report('regression.sh (server basics)', r.status === 0, (r.stdout || '') + (r.stderr || ''));
   const realAfter = fs.existsSync(real) ? fs.readFileSync(real) : null; report('data/orders.json untouched by the tests', (realBefore === null && realAfter === null) || (realBefore && realAfter && Buffer.compare(realBefore, realAfter) === 0), 'orders.json changed');

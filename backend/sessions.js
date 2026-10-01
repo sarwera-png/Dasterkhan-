@@ -22,6 +22,10 @@ function newOrderState() {
     addressConfirmed: false, // delivery: the customer clearly said yes to the read-back (reset by ANY change)
     reviewShownVersion: null, // reviewVersion of the last order review shown to the customer
     confirmedVersion: null, // reviewVersion that the customer confirmed with the button
+    whatsappVersion: null, // WhatsApp channel: reviewVersion the link below was made for (nothing is saved or sent in this channel)
+    whatsappRef: null,
+    whatsappLink: null,
+    whatsappMessage: null,
     orderId: null, // KD-xxxx, set only after the order was saved
     receipt: null, // the receipt text for that saved order
     customer: { name: null, phone: null, address: null }, // address (delivery): { block, house, street, apartment, landmark, instructions }
