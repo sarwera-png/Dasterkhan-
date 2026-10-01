@@ -9,6 +9,7 @@ const { saveConfirmedOrder } = require('./orders');
 const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
 const { guardReply } = require('./guard');
 const cooldown = require('./cooldown');
+const extraAi = require('./extra-ai');
 const { renderPrompt, paymentLine, paymentLineUrdu } = require('./facts');
 const staff = require('./staff');
 const { TOOL_DECLARATIONS, runToolCalls } = require('./tools');
@@ -144,6 +145,21 @@ async function attemptModel(model, contents, systemInstruction) {
   }
 }
 
+// One attempt on any chain entry: a Gemini model name, or "extra:<model>" for the optional OpenAI-compatible provider.
+async function attemptEntry(entry, contents, systemInstruction) {
+  if (!extraAi.isExtra(entry)) return attemptModel(entry, contents, systemInstruction);
+  const result = await extraAi.attempt(entry, contents, systemInstruction, TOOL_DECLARATIONS, REQUEST_TIMEOUT_MS);
+  if (!result.response) cooldown.markCooling(entry, result.failure, result.retryAfter); // 429 / 503: skip this model for a while
+  return result;
+}
+
+// Gemini models first (when a Gemini key is set), then the extra provider's models (when it is configured).
+function currentChain() {
+  return [...(ai ? MODEL_CHAIN : []), ...extraAi.chainEntries()];
+}
+const label = (entry) => (extraAi.isExtra(entry) ? 'Extra AI' : 'Gemini');
+const shown = (entry) => (extraAi.isExtra(entry) ? extraAi.modelName(entry) : entry);
+
 // Function-call turns written by one model carry that model's thought signatures. If the chain falls back to a
 // different model in the middle of a tool loop, use the documented "skip validation" placeholder instead.
 const turnAuthors = new WeakMap(); // model turn -> model that wrote it (kept off the objects sent to the API)
@@ -201,7 +217,8 @@ app.post('/api/chat', async (req, res) => {
   // Sent with every reply: the session id and the review version the "Confirm order" button may use (null = no button).
   const extras = () => ({ sessionId, reviewVersion: validReviewVersion(sessionState) });
 
-  if (!ai) {
+  const chain = currentChain(); // fixed for this customer message
+  if (chain.length === 0) {
     console.error('Chat unavailable: GEMINI_API_KEY is not set');
     return res.status(503).json({
       error: 'The assistant is not configured on the server.',
@@ -252,40 +269,43 @@ app.post('/api/chat', async (req, res) => {
   let attempts = 0;
   let toolRounds = 0;
   // If every model is cooling down, start with the one whose cooldown ends first: never fail without a real attempt.
-  const soonest = cooldown.earliestIfAllCooling(MODEL_CHAIN);
-  if (soonest) modelIndex = MODEL_CHAIN.indexOf(soonest);
+  const soonest = cooldown.earliestIfAllCooling(chain);
+  if (soonest) modelIndex = chain.indexOf(soonest);
 
   while (true) {
     let response = null;
     let usedModel = null;
 
-    while (modelIndex < MODEL_CHAIN.length && !response) {
+    while (modelIndex < chain.length && !response) {
       if (Date.now() - startedAt > TOTAL_DEADLINE_MS) {
         console.error('Gemini: time limit reached');
-        modelIndex = MODEL_CHAIN.length;
+        modelIndex = chain.length;
         break;
       }
-      const model = MODEL_CHAIN[modelIndex];
+      const model = chain[modelIndex];
       const left = cooldown.secondsLeft(model);
       if (left > 0 && !(attempts === 0 && soonest === model)) {
-        console.log(`Gemini skip: model=${model} (cooldown ${left}s)`);
+        console.log(`${label(model)} skip: model=${shown(model)} (cooldown ${left}s)`);
         modelIndex += 1;
         continue;
       }
       attempts += 1;
-      const result = await attemptModel(model, contentsForModel(contents, model), systemInstruction);
+      const result = await attemptEntry(model, contentsForModel(contents, model), systemInstruction);
 
       if (result.response) {
-        console.log(`Gemini attempt ${attempts}: model=${model} ok`);
+        console.log(`${label(model)} attempt ${attempts}: model=${shown(model)} ok`);
         cooldown.markOk(model);
         response = result.response;
         usedModel = model;
         break;
       }
 
-      console.error(`Gemini attempt ${attempts}: model=${model} status=${result.failure}`);
+      console.error(`${label(model)} attempt ${attempts}: model=${shown(model)} status=${result.failure}`);
 
-      if (STOP_STATUSES.has(result.failure)) {
+      if (!extraAi.isExtra(model) && STOP_STATUSES.has(result.failure)) {
+        // Bad request or key problem with Gemini: the other Gemini models will not help. Go on with the extra provider if there is one.
+        const firstExtra = chain.findIndex((e) => extraAi.isExtra(e));
+        if (firstExtra !== -1) { modelIndex = firstExtra; continue; }
         // Bad request or key problem: stop immediately, do not try more models.
         return res.status(502).json({
           error: 'The assistant could not answer right now.',
@@ -298,7 +318,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     if (!response) {
-      console.error('Gemini: all models failed');
+      console.error(chain.some((e) => extraAi.isExtra(e)) ? 'AI: all models failed' : 'Gemini: all models failed');
       return res.status(503).json({
         error: 'The assistant is busy right now.',
         reply: BUSY_REPLY,
@@ -308,7 +328,7 @@ app.post('/api/chat', async (req, res) => {
 
     const calls = response.functionCalls;
     if (!Array.isArray(calls) || calls.length === 0) {
-      console.log(`Gemini answered: model=${usedModel}`);
+      console.log(`${label(usedModel)} answered: model=${shown(usedModel)}`);
       // A reply that claims the order is placed/confirmed is replaced unless the server really saved this session's order.
       const reply = guardReply(response.text.trim(), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
       return res.json({ reply, ...extras() });
