@@ -473,7 +473,18 @@ function confirmAddress(args, ctx) {
       'The customer has not clearly said yes. Nothing was confirmed. A message like ok, theek hai, hmm or maybe is not a yes.');
   }
   state.addressConfirmed = true;
-  return { ok: true, addressConfirmed: true, orderCreated: false, customerMessage: 'Thank you, your delivery address is confirmed.' };
+  // Where the order stands now, so the reply continues from the real cart instead of starting over.
+  const count = state.items.reduce((n, line) => n + line.quantity, 0);
+  let reviewReady = false;
+  try { const { buildReview } = require('./review'); reviewReady = buildReview(state, { menu: loadMenu(), promotions: require('./data').loadPromotions().promotions, restaurant: loadRestaurant() }).ok; } catch (e) { reviewReady = false; }
+  const cartText = count > 0 ? ` Your cart has ${count} ${count === 1 ? 'item' : 'items'}${reviewReady ? ' and the order is ready for review' : ''}.` : ' Your cart is empty.';
+  return {
+    ok: true, addressConfirmed: true, orderCreated: false, cartItems: count, reviewReady,
+    customerMessage: 'Thank you, your delivery address is confirmed.' + cartText,
+    internalNote: count > 0
+      ? (reviewReady ? 'The cart is NOT empty: never ask what the customer wants to order. Offer to show the order review now (call getOrderReview), or ask if they want to add anything else first.' : 'The cart is NOT empty: never ask what the customer wants to order. Ask for whatever the review still needs, or if they want to add anything else.')
+      : 'The cart is empty: ask what the customer would like to order.'
+  };
 }
 
 const handlers = { setCustomerDetails, readBackAddress, confirmAddress };

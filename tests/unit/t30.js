@@ -26,7 +26,7 @@ const full = () => { const s = fresh(); run(s, 'addItemToCart', { itemId: 'NAN01
   console.log('4) ' + ambiguous.length + ' ambiguous/negative/mixed replies (ok, theek hai, hmm, maybe, "let me ask my family", "yes but change the street", nahi, ji, 👍, Urdu ٹھیک ہے / شاید ...) never confirm the address: PASS');
   // 5) clear yes confirms (English, Roman Urdu, Urdu script)
   const yeses = ['yes', 'Yes!', 'YES please', 'yes, it is correct', 'Correct.', "that's right", 'confirm', 'Haan', 'haan ji', 'Haan, sahi hai.', 'bilkul sahi hai', 'جی ہاں', 'ہاں، صحیح ہے', 'بالکل صحیح ہے', 'جی ہاں درست ہے'];
-  for (const msg of yeses) { assert(isClearYes(msg), msg); const t = full(); run(t, 'readBackAddress', {}); const y = run(t, 'confirmAddress', {}, msg); assert.deepStrictEqual([y.ok, t.addressConfirmed, y.orderCreated], [true, true, false], msg); assert.strictEqual(y.customerMessage, 'Thank you, your delivery address is confirmed.'); }
+  for (const msg of yeses) { assert(isClearYes(msg), msg); const t = full(); run(t, 'readBackAddress', {}); const y = run(t, 'confirmAddress', {}, msg); assert.deepStrictEqual([y.ok, t.addressConfirmed, y.orderCreated], [true, true, false], msg); assert(y.customerMessage.startsWith('Thank you, your delivery address is confirmed.')); }
   console.log('5) ' + yeses.length + ' clear yes replies (English / Roman Urdu / Urdu script, punctuation and capitals ignored) confirm: PASS');
   // 6) confirming does NOT create an order
   const c = full(); run(c, 'readBackAddress', {}); run(c, 'confirmAddress', {}, 'yes');
@@ -53,7 +53,7 @@ const full = () => { const s = fresh(); run(s, 'addItemToCart', { itemId: 'NAN01
   let q = await L.post(base, { message: 'ok', sessionId: sid }); assert.strictEqual(q.json.reply, 'Just to be sure: is the address correct? Please say yes, or tell me what to change.'); assert.strictEqual(st.addressConfirmed, false);
   q = await L.post(base, { message: 'theek hai', sessionId: sid }); assert.strictEqual(st.addressConfirmed, false);
   q = await L.post(base, { message: 'let me ask my family', sessionId: sid }); assert.strictEqual(st.addressConfirmed, false);
-  q = await L.post(base, { message: 'Haan, sahi hai.', sessionId: sid }); assert.strictEqual(q.json.reply, 'Thank you, your delivery address is confirmed.'); assert.strictEqual(st.addressConfirmed, true);
+  q = await L.post(base, { message: 'Haan, sahi hai.', sessionId: sid }); assert(q.json.reply.startsWith('Thank you, your delivery address is confirmed.')); assert.strictEqual(st.addressConfirmed, true);
   assert.strictEqual(fs.readFileSync(ordersFile, 'utf8'), ordersBefore);
   assert(!TOOL_DECLARATIONS.find(d => d.name === 'confirmAddress').parameters); /* no model-supplied reply parameter exists */
   console.log('9) HTTP: the scripted model ALWAYS claims "yes", but the customer\'s real messages "ok", "theek hai", "let me ask my family" confirm nothing; "Haan, sahi hai." does; no order record created: PASS');
