@@ -160,21 +160,6 @@ function currentChain() {
 const label = (entry) => (extraAi.isExtra(entry) ? 'Extra AI' : 'Gemini');
 const shown = (entry) => (extraAi.isExtra(entry) ? extraAi.modelName(entry) : entry);
 
-// Function-call turns written by one model carry that model's thought signatures. If the chain falls back to a
-// different model in the middle of a tool loop, use the documented "skip validation" placeholder instead.
-const turnAuthors = new WeakMap(); // model turn -> model that wrote it (kept off the objects sent to the API)
-
-function contentsForModel(contents, model) {
-  return contents.map((turn) => {
-    const author = turnAuthors.get(turn);
-    if (!author || author === model) return turn;
-    return {
-      ...turn,
-      parts: turn.parts.map((part) => (part.functionCall ? { ...part, thoughtSignature: 'skip_thought_signature_validator' } : part))
-    };
-  });
-}
-
 // Statuses that mean the request or key is wrong: trying another model will not help.
 const STOP_STATUSES = new Set([400, 401, 403]);
 
@@ -262,102 +247,109 @@ app.post('/api/chat', async (req, res) => {
   const contents = buildContents(conversationHistory || [], message);
   const { state } = getOrCreateSession(sessionId); // this session's order state only
 
-  // Tool-call loop. Each model request tries the chain in order (one attempt per model, never the same model twice).
-  // The model index only moves forward, so a model that failed is not retried within this customer message.
+  // Each model gets ONE attempt at this customer message, and an attempt is the model's whole run (all its tool rounds).
+  // If an attempt fails at any point, even after it already ran tools, everything it did is undone before the next model
+  // starts: the order state goes back to the snapshot taken here, and the conversation goes back to what the customer sent.
+  // So a failed attempt never leaves a changed cart, a repeated tool call or half a reply behind. A model that fails is not
+  // retried for this message, and the model index only moves forward.
+  const snapshot = JSON.parse(JSON.stringify(state));
+  const baseLength = contents.length;
+  const rollback = () => {
+    for (const key of Object.keys(state)) delete state[key];
+    Object.assign(state, JSON.parse(JSON.stringify(snapshot)));
+    contents.length = baseLength;
+  };
   const startedAt = Date.now();
   let modelIndex = 0;
   let attempts = 0;
-  let toolRounds = 0;
   // If every model is cooling down, start with the one whose cooldown ends first: never fail without a real attempt.
   const soonest = cooldown.earliestIfAllCooling(chain);
   if (soonest) modelIndex = chain.indexOf(soonest);
 
-  while (true) {
-    let response = null;
-    let usedModel = null;
-
-    while (modelIndex < chain.length && !response) {
-      if (Date.now() - startedAt > TOTAL_DEADLINE_MS) {
-        console.error('Gemini: time limit reached');
-        modelIndex = chain.length;
-        break;
-      }
-      const model = chain[modelIndex];
-      const left = cooldown.secondsLeft(model);
-      if (left > 0 && !(attempts === 0 && soonest === model)) {
-        console.log(`${label(model)} skip: model=${shown(model)} (cooldown ${left}s)`);
-        modelIndex += 1;
-        continue;
-      }
-      attempts += 1;
-      const result = await attemptEntry(model, contentsForModel(contents, model), systemInstruction);
-
-      if (result.response) {
-        console.log(`${label(model)} attempt ${attempts}: model=${shown(model)} ok`);
-        cooldown.markOk(model);
-        response = result.response;
-        usedModel = model;
-        break;
-      }
-
-      console.error(`${label(model)} attempt ${attempts}: model=${shown(model)} status=${result.failure}`);
-
-      if (!extraAi.isExtra(model) && STOP_STATUSES.has(result.failure)) {
-        // Bad request or key problem with Gemini: the other Gemini models will not help. Go on with the extra provider if there is one.
-        const firstExtra = chain.findIndex((e) => extraAi.isExtra(e));
-        if (firstExtra !== -1) { modelIndex = firstExtra; continue; }
-        // Bad request or key problem: stop immediately, do not try more models.
-        return res.status(502).json({
-          error: 'The assistant could not answer right now.',
-          reply: FALLBACK_REPLY,
-          ...extras()
-        });
-      }
-      // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
+  while (modelIndex < chain.length) {
+    if (Date.now() - startedAt > TOTAL_DEADLINE_MS) {
+      console.error('Gemini: time limit reached');
+      break;
+    }
+    const model = chain[modelIndex];
+    const left = cooldown.secondsLeft(model);
+    if (left > 0 && !(attempts === 0 && soonest === model)) {
+      console.log(`${label(model)} skip: model=${shown(model)} (cooldown ${left}s)`);
       modelIndex += 1;
+      continue;
     }
 
-    if (!response) {
-      console.error(chain.some((e) => extraAi.isExtra(e)) ? 'AI: all models failed' : 'Gemini: all models failed');
-      return res.status(503).json({
-        error: 'The assistant is busy right now.',
-        reply: BUSY_REPLY,
-        ...extras()
+    let toolRounds = 0;
+    let toolCallsRun = 0;
+    let failure = null;
+    while (true) {
+      if (Date.now() - startedAt > TOTAL_DEADLINE_MS) { failure = 'deadline'; break; }
+      attempts += 1;
+      const result = await attemptEntry(model, contents, systemInstruction);
+      if (!result.response) {
+        failure = result.failure;
+        console.error(`${label(model)} attempt ${attempts}: model=${shown(model)} status=${failure}`);
+        break;
+      }
+      console.log(`${label(model)} attempt ${attempts}: model=${shown(model)} ok`);
+      cooldown.markOk(model);
+      const response = result.response;
+      const calls = response.functionCalls;
+
+      if (!Array.isArray(calls) || calls.length === 0) {
+        console.log(`${label(model)} answered: model=${shown(model)}`);
+        // The reply is this attempt's final text only. A reply that claims the order is placed/confirmed is replaced unless the server really saved this session's order.
+        const reply = guardReply(response.text.trim(), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
+        return res.json({ reply, ...extras() });
+      }
+
+      if (toolRounds >= MAX_TOOL_ROUNDS) {
+        console.error('Gemini: tool-call limit reached');
+        return res.json({ reply: TOOL_LIMIT_REPLY, ...extras() });
+      }
+      toolRounds += 1;
+      console.log(`Tool round ${toolRounds}: ${calls.map((c) => c.name).join(', ')}`);
+
+      // Keep the model's own function-call turn verbatim, then answer it with the tool results.
+      const modelTurn = response.candidates && response.candidates[0] && response.candidates[0].content;
+      contents.push(modelTurn && Array.isArray(modelTurn.parts) ? modelTurn : { role: 'model', parts: calls.map((c) => ({ functionCall: c })) });
+      const results = runToolCalls(calls, { state, latestMessage: message }); // setOrderType first; results stay in the model's call order
+      toolCallsRun += calls.length;
+      contents.push({
+        role: 'user',
+        parts: calls.map((call, i) => {
+          const part = { name: call.name, response: results[i] };
+          if (call.id) part.id = call.id;
+          return { functionResponse: part };
+        })
       });
     }
 
-    const calls = response.functionCalls;
-    if (!Array.isArray(calls) || calls.length === 0) {
-      console.log(`${label(usedModel)} answered: model=${shown(usedModel)}`);
-      // A reply that claims the order is placed/confirmed is replaced unless the server really saved this session's order.
-      const reply = guardReply(response.text.trim(), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
-      return res.json({ reply, ...extras() });
-    }
+    // This attempt failed: undo everything it did before anything else happens.
+    rollback();
+    if (toolCallsRun > 0) console.log(`Rollback: attempt ${attempts} failed after ${toolCallsRun} tool call(s), state restored`);
 
-    if (toolRounds >= MAX_TOOL_ROUNDS) {
-      console.error('Gemini: tool-call limit reached');
-      return res.json({ reply: TOOL_LIMIT_REPLY, ...extras() });
+    if (!extraAi.isExtra(model) && STOP_STATUSES.has(failure)) {
+      // Bad request or key problem with Gemini: the other Gemini models will not help. Go on with the extra provider if there is one.
+      const firstExtra = chain.findIndex((e) => extraAi.isExtra(e));
+      if (firstExtra !== -1) { modelIndex = firstExtra; continue; }
+      // Bad request or key problem: stop immediately, do not try more models.
+      return res.status(502).json({
+        error: 'The assistant could not answer right now.',
+        reply: FALLBACK_REPLY,
+        ...extras()
+      });
     }
-    toolRounds += 1;
-    console.log(`Tool round ${toolRounds}: ${calls.map((c) => c.name).join(', ')}`);
-
-    // Keep the model's own function-call turn verbatim, then answer it with the tool results.
-    const modelTurn = response.candidates && response.candidates[0] && response.candidates[0].content;
-    const turn = modelTurn && Array.isArray(modelTurn.parts)
-      ? modelTurn
-      : { role: 'model', parts: calls.map((c) => ({ functionCall: c })) };
-    turnAuthors.set(turn, usedModel);
-    contents.push(turn);
-    const results = runToolCalls(calls, { state, latestMessage: message }); // setOrderType first; results stay in the model's call order
-    contents.push({
-      role: 'user',
-      parts: calls.map((call, i) => {
-        const part = { name: call.name, response: results[i] };
-        if (call.id) part.id = call.id;
-        return { functionResponse: part };
-      })
-    });
+    // 503, 500, 504, 429, timeout, 404 (model missing) and anything else: move on to the next model.
+    modelIndex += 1;
   }
+
+  console.error(chain.some((e) => extraAi.isExtra(e)) ? 'AI: all models failed' : 'Gemini: all models failed');
+  return res.status(503).json({
+    error: 'The assistant is busy right now.',
+    reply: BUSY_REPLY,
+    ...extras()
+  });
 });
 
 // The customer presses the "Confirm order" button: the ONLY way an order is confirmed. Chat text never does it.

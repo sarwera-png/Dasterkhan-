@@ -53,9 +53,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
     return L.text('answered by ' + model); };
   r = await L.post(base, { message: 'menu?' });
   assert.deepStrictEqual(reqs.map(x => x.model), ['gemini-3.8-flash', 'gemini-3.8-flash', 'gemini-3.7-flash']); assert.strictEqual(r.json.reply, 'answered by gemini-3.7-flash');
-  assert.strictEqual(reqs[1].contents[1].parts[0].thoughtSignature, 'SIG-ORIGINAL');
-  assert.strictEqual(reqs[2].contents[1].parts[0].thoughtSignature, 'skip_thought_signature_validator');
-  console.log('5) mid-loop fallback: 3.8 (calls) -> 3.8 503 -> 3.7 answers; same-model resend keeps the signature, other model gets the placeholder: PASS');
+  assert.strictEqual(reqs[1].contents[1].parts[0].thoughtSignature, 'SIG-ORIGINAL'); // the failing model's own next round still carries its signature
+  assert.strictEqual(reqs[2].contents.length, 1, 'the next model starts from the customer message only: the failed attempt left nothing behind (Step AM)');
+  console.log('5) mid-loop failure: 3.8 (calls) -> 3.8 503 -> everything 3.8 did is discarded, 3.7 starts fresh from the customer message and answers: PASS');
   // 6) model index never moves back (no retry of failed model): 3.8 503 at request 1, 3.7 calls tool, then 3.7 answers
   reqs.length = 0; n = 0; global.__STUB = async ({ model, contents }) => { reqs.push({ model }); n++; if (n === 1) throw L.err(429); if (n === 2) return L.calls([{ name: 'getMenu' }]); return L.text('ok ' + model); };
   r = await L.post(base, { message: 'menu?' }); assert.deepStrictEqual(reqs.map(x => x.model), ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.7-flash']);
