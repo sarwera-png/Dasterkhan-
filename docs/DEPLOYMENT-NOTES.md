@@ -10,15 +10,24 @@ What is already in the repo: `api/index.js` (thin entry that exports the same Ex
 2. Project Settings > General > **Node.js Version: 22.x**.
 3. Project Settings > **Environment Variables** (names only here, enter the values in Vercel, never in the repo):
    - `GEMINI_API_KEY` (required for the chat)
+   - `SESSION_SECRET` (**required on Vercel**: at least 32 random characters; without it chat answers 503 `session_not_configured`; see "Generating SESSION_SECRET" below)
    - `GEMINI_FALLBACK_MODELS` (optional)
    - `GEMINI_COOLDOWN_SECONDS` (optional, default 60)
    - `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` (optional extra provider, see section 5b; all three or none)
    - Do **not** set `ORDERS_ENABLED` (ordering stays off: the public demo takes no orders).
    - Do **not** set `STAFF_PASSWORD` (the staff dashboard stays locked with 403).
 4. Deploy, open the URL, check: website loads, chat answers, no "Confirm order" button, `/staff` shows 403.
-5. The 60 s function limit (`maxDuration`) is the highest the free plan allows; the app's own 80 s deadline can be cut short by the platform.
+5. The function limit is 60 s (`maxDuration` in `vercel.json`). On Vercel the app's own per-message deadline is 55 s (80 s locally); each model attempt is still limited to 20 s.
 
-Known limits of the demo on Vercel: chat sessions and carts live in one instance's memory, so a cart can disappear between messages when Vercel uses another instance (a shared session store is needed to fix this). Rate limiting and the model cooldown are also per instance. Orders cannot be saved at all (section 2).
+Public demo environment variables: set `GEMINI_API_KEY`, `SESSION_SECRET`, and optionally `GEMINI_FALLBACK_MODELS` and `EXTRA_AI_BASE_URL` / `EXTRA_AI_API_KEY` / `EXTRA_AI_MODELS`. Leave `ORDERS_ENABLED` and `STAFF_PASSWORD` **unset**.
+
+Sessions on Vercel: the order state (cart, details, review) is sealed by the server with AES-256-GCM using `SESSION_SECRET` and returned to the browser with every answer; the browser sends it back, so any instance can continue the same cart. The browser cannot read or change it (a changed, expired (2 hours) or foreign token simply starts a fresh empty session). Only the order state is inside it, no conversation text. If `SESSION_SECRET` is missing on Vercel the chat refuses (503) instead of running without it. If you change `SESSION_SECRET`, open carts are reset. The model cooldown is still per instance. Orders cannot be saved at all (section 2).
+
+Generating SESSION_SECRET (Windows PowerShell; the value is never shown on screen):
+
+- For your own `.env`: `$b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); Add-Content -Path .env -Value ("`nSESSION_SECRET=" + [Convert]::ToBase64String($b))`
+- For Vercel: `$b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b) | Set-Clipboard`, paste into the Environment Variables field, then clear the clipboard with `Set-Clipboard -Value ' '`.
+- Use a different value for the public site than for your laptop, and never put it in the repo, in chat or in screenshots.
 
 ## 1. What must change to run on Vercel (status)
 
@@ -26,7 +35,7 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 
 - **Express as a function (DONE, see section 0):** the app would need to be exported as a handler (for example an `api/` entry that re-exports the Express app) instead of calling `listen`, and routes (`/api/chat`, `/api/order/confirm`, `/staff`, `/api/staff/*`) mapped to it in a Vercel config file.
 - **Static frontend (DONE: served by the same function, bundled via `includeFiles`):** `frontend/` (and `backend/staff/*`, which the server streams from disk) would be served as static files or included in the function bundle; the `express.static` setup would change.
-- **In-memory chat sessions are lost:** sessions, carts and the review/confirm state live in the server's memory. Serverless instances are created and dropped at any time and several run side by side, so a customer's next message can land on an instance that has never seen their cart. Sessions need an external store (a database or key-value store) before any real use.
+- **In-memory chat sessions are lost (SOLVED by the sealed session token, see section 0):** sessions, carts and the review/confirm state live in the server's memory. Serverless instances are created and dropped at any time and several run side by side, so a customer's next message can land on an instance that has never seen their cart. Sessions need an external store (a database or key-value store) before any real use.
 - **Non-persistent file writes:** `data/orders.json` is written at runtime. On Vercel the file system is read-only or temporary and is not shared between instances, so orders would silently disappear or differ per instance. A real database is required.
 - **Timeouts:** one chat request may try up to three models (20 s each, 80 s total). Function time limits on the chosen plan must allow this, or the limits need revisiting.
 - **HTTPS and proxy:** Vercel terminates HTTPS in front of the app (see section 4 for what that means for the staff lockout).
@@ -47,6 +56,7 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 | `ORDERS_ENABLED` | leave **unset** on the public site (section 2) |
 | `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS` | optional; defaults are in `.env.example` |
 | `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` | optional extra AI provider (OpenAI-compatible, e.g. Groq), used only after all Gemini models fail; all three or it stays off |
+| `SESSION_SECRET` | seals the session token (32+ random characters); required on Vercel, optional locally (a per-run secret is generated) |
 | `GEMINI_COOLDOWN_SECONDS` | optional; seconds to skip a model after 429/503 (default 60, max 300, 0 = off) |
 | `PORT` | not used on Vercel; used when running as a normal server |
 
