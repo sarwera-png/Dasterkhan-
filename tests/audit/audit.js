@@ -75,15 +75,15 @@ check('pickup: name only needed (no phone/address), total has no fee', () => {
   const { state: st } = sessions.getOrCreateSession(); run(st, 'addItemToCart', { itemId: 'NAN01', quantity: 2 }); run(st, 'setOrderType', { orderType: 'pickup' });
   const r = run(st, 'setCustomerDetails', { name: 'Ali' }); assert.strictEqual(r.ok, true); assert(!JSON.stringify(r.missingDetails || []).match(/phone|address/i));
   assert.strictEqual(st.totals.deliveryFee, 0); assert.strictEqual(st.totals.total, 80);
-  assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Ali', pickupTime: '23:30' }).ok, false); assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Ali', pickupTime: '11:00' }).ok, false);
+  for (const bad of ['23:30', '11:00']) { const x = run(st, 'setCustomerDetails', { name: 'Ali', pickupTime: bad }); assert(x.rejectedFields && x.rejectedFields.some((f) => f.field === 'pickupTime'), 'pickup time ' + bad + ' refused'); assert.strictEqual(st.pickupTime, null, 'a refused pickup time is not stored'); } // the valid name is kept, the time is rejected on its own (field-by-field)
   assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Ali', pickupTime: '19:30' }).ok, true);
 });
 // ---------- 5. delivery + out of area ----------
 check('delivery: needs phone+address, Block 1-5 only, 150 fee, outside area refused', () => {
   const { state: st } = sessions.getOrCreateSession(); run(st, 'addItemToCart', { itemId: 'NAN01', quantity: 1 }); run(st, 'setOrderType', { orderType: 'delivery' });
   assert.strictEqual(st.totals.deliveryFee, 150); assert.strictEqual(st.totals.total, 190);
-  for (const b of ['6', '7', '13', '0', '-1', '-3', '1.5', '99', 'abc', 'block 6', 'block -1']) { const r = run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }); assert.strictEqual(r.ok, false, 'block ' + b); assert.notStrictEqual(st.customer.address && st.customer.address.block, b); }
-  assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Sara', phone: '12345', ...addr }).ok, false);
+  for (const b of ['6', '7', '13', '0', '-1', '-3', '1.5', '99', 'abc', 'block 6', 'block -1']) { const r = run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }); const outside = ['6', '7', '13', '99', 'block 6'].includes(b); if (outside) assert.strictEqual(r.ok, false, 'block ' + b + ' is refused'); assert((r.rejectedFields || []).some((f) => ['outside_delivery_area', 'invalid_block'].includes(f.error)) || r.error, 'block ' + b + ' reported'); assert.notStrictEqual(st.customer.address && st.customer.address.block, parseInt(b, 10) || b, 'block ' + b + ' not stored'); assert(!st.customer.address || !st.customer.address.block, 'no block stored for ' + b); }
+  { const x = run(st, 'setCustomerDetails', { name: 'Sara', phone: '12345', ...addr }); assert((x.rejectedFields || []).some((f) => f.field === 'phone'), 'a bad phone is rejected on its own'); assert.notStrictEqual(st.customer.phone, '12345', 'and the bad value is not stored'); }
   for (const b of ['1', '2', '3', '4', '5', 'Block 1', 'Block-2', 'block no 3', 'blk 4', 'بلاک 5']) assert.strictEqual(run(st, 'setCustomerDetails', { name: 'Sara', phone: '03001234567', ...addr, block: b }).ok, true, 'block ' + b);
   assert.strictEqual(run(st, 'setCustomerDetails', { landmark: 'near the mall' }).ok === true && st.customer.address.block === 5, true);
 });

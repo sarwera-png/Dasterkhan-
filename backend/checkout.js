@@ -241,7 +241,7 @@ const declarations = [
     parameters: {
       type: 'OBJECT',
       properties: {
-        name: { type: 'STRING', description: 'Customer name, as given' },
+        name: { type: 'STRING', description: 'OPTIONAL. The customer\'s own name, only if the customer said their name in their own words. Leave this out otherwise: never use an area, address, item or order type as a name and never invent one.' },
         pickupTime: { type: 'STRING', description: 'Preferred pickup time in 24-hour HH:MM (for example 19:30), only if the customer gave one' },
         noPickupTimePreference: { type: 'BOOLEAN', description: 'true if the customer said they have no pickup time preference' },
         phone: { type: 'STRING', description: 'Delivery only: mobile number exactly as given, like 03001234567 or +923001234567' },
@@ -284,10 +284,15 @@ function setCustomerDetails(args, ctx) {
   const address = {};
   const notes = [];
 
+  // Every field is checked on its own: a field that fails is reported (with its own reason) and left out, it never throws away the valid ones.
+  // The one exception is an address outside the delivery area: then no part of that address is kept (see below).
+  const rejected = []; // { field, error, message, note }
+  const reject = (field, failure) => { rejected.push({ field, error: failure.error, message: failure.customerMessage, note: failure.internalNote || null }); };
+
   if (has(args.name)) {
     const v = validateName(args.name);
-    if (v.error) return v.error;
-    updates.name = v.value;
+    if (v.error) reject('name', v.error);
+    else updates.name = v.value;
   }
 
   // ---- pickup-only details
@@ -298,8 +303,8 @@ function setCustomerDetails(args, ctx) {
       notes.push('A pickup time does not apply to delivery orders. It was ignored. Do not promise any delivery time.');
     } else {
       const v = validatePickupTime(args.pickupTime);
-      if (v.error) return v.error;
-      updates.pickupTime = v.value;
+      if (v.error) reject('pickupTime', v.error);
+      else updates.pickupTime = v.value;
     }
   }
 
@@ -312,55 +317,68 @@ function setCustomerDetails(args, ctx) {
     if (has(args.address)) {
       // The model sent the whole address as one text instead of separate parts: read it only if every part is labelled, else ask.
       const parsed = parseAddressString(args.address, restaurant);
-      if (!parsed) return fail('invalid_address', "Sorry, I couldn't read that address clearly. Please tell me the block number, the house or flat number and the street.", null, 'Nothing was stored. Pass the parts separately (block, houseOrFlat, street) exactly as the customer said them; do not guess.');
-      args = { ...args };
-      for (const key of ['area', 'block', 'houseOrFlat', 'street']) if (!has(args[key]) && parsed[key] !== undefined) args[key] = parsed[key]; // separately given fields win
+      if (!parsed) reject('address', fail('invalid_address', "Sorry, I couldn't read that address clearly. Please tell me the block number, the house or flat number and the street.", null, 'Pass the parts separately (block, houseOrFlat, street) exactly as the customer said them; do not guess.'));
+      else {
+        args = { ...args };
+        for (const key of ['area', 'block', 'houseOrFlat', 'street']) if (!has(args[key]) && parsed[key] !== undefined) args[key] = parsed[key]; // separately given fields win
+      }
     }
-    if (has(args.area) && !isInArea(args.area, restaurant)) return outsideAreaError(restaurant);
+    let outside = false;
+    if (has(args.area) && !isInArea(args.area, restaurant)) outside = true;
     if (has(args.block)) {
       const block = parseBlock(args.block);
       if (block === null) {
-        return fail('invalid_block', `Which block is it, from ${Math.min(...restaurant.delivery.blocks)} to ${Math.max(...restaurant.delivery.blocks)}?`, null,
-          'Nothing was stored. The block must be a plain number. Do not guess it.');
-      }
-      if (!restaurant.delivery.blocks.includes(block)) return outsideAreaError(restaurant);
-      address.block = block;
+        const lo = Math.min(...restaurant.delivery.blocks); const hi = Math.max(...restaurant.delivery.blocks);
+        reject('block', fail('invalid_block', `Which block is it, from ${lo} to ${hi}?`, null, 'The block must be a plain number. Do not guess it.'));
+      } else if (!restaurant.delivery.blocks.includes(block)) outside = true;
+      else address.block = block;
     }
     if (has(args.houseOrFlat)) {
       const houseRaw = cleanLine(args.houseOrFlat, { max: 40, pattern: HOUSE_PATTERN });
       const house = houseRaw && houseRaw.replace(/^(?:house|flat)\s*(?:no\.?|number|#|-)?\s*(?=\S)/i, '') || houseRaw; // "house 12-B" -> "12-B" (the label already says house or flat)
-      if (!house) return fail('invalid_address', "Sorry, I didn't catch the house or flat number. What is it?", null, 'Nothing was stored. Do not guess it.');
-      address.house = house;
+      if (!house) reject('houseOrFlat', fail('invalid_address', "Sorry, I didn't catch the house or flat number. What is it?", null, 'Do not guess it.'));
+      else address.house = house;
     }
     if (has(args.street)) {
       const street = cleanLine(args.street, { min: 1, max: 80, pattern: STREET_PATTERN });
-      if (!street) return fail('invalid_address', "Sorry, I didn't catch the street. Which street is it on?", null, 'Nothing was stored. Do not guess it.');
-      address.street = street;
+      if (!street) reject('street', fail('invalid_address', "Sorry, I didn't catch the street. Which street is it on?", null, 'Do not guess it.'));
+      else address.street = street;
     }
     if (has(args.apartment)) {
       const apartment = cleanLine(args.apartment, { max: 40, pattern: HOUSE_PATTERN });
-      if (!apartment) return fail('invalid_address', "Sorry, I didn't catch the apartment or unit. What is it?", null, 'Nothing was stored.');
-      address.apartment = apartment;
+      if (!apartment) reject('apartment', fail('invalid_address', "Sorry, I didn't catch the apartment or unit. What is it?", null, null));
+      else address.apartment = apartment;
     }
     if (has(args.landmark)) {
       const landmark = cleanLine(args.landmark, { max: 80 });
-      if (!landmark) return fail('invalid_address', "Sorry, I didn't catch that landmark. Could you say it again?", null, 'Nothing was stored.');
-      address.landmark = landmark;
+      if (!landmark) reject('landmark', fail('invalid_address', "Sorry, I didn't catch that landmark. Could you say it again?", null, null));
+      else address.landmark = landmark;
     }
     if (has(args.instructions)) {
       const instructions = cleanLine(args.instructions, { max: 200 });
-      if (!instructions) return fail('invalid_address', "Sorry, those delivery instructions are too long or unclear. Could you shorten them?", null, 'Nothing was stored.');
-      address.instructions = instructions;
+      if (!instructions) reject('instructions', fail('invalid_address', "Sorry, those delivery instructions are too long or unclear. Could you shorten them?", null, null));
+      else address.instructions = instructions;
+    }
+    if (outside) {
+      // An address we cannot deliver to is not kept in any part (house and street of a refused address are meaningless); name and phone are still kept.
+      for (const key of Object.keys(address)) delete address[key];
+      for (let i = rejected.length - 1; i >= 0; i -= 1) if (['block', 'houseOrFlat', 'street', 'apartment', 'landmark', 'instructions', 'address'].includes(rejected[i].field)) rejected.splice(i, 1);
+      reject('area', outsideAreaError(restaurant));
     }
     if (has(args.phone)) {
       const v = validatePhone(args.phone);
-      if (v.error) return v.error;
-      updates.phone = v.value;
+      if (v.error) reject('phone', v.error);
+      else updates.phone = v.value;
     }
     if (args.noExtraAddressDetails === true) updates.addressExtrasDeclined = true;
   }
 
   if (Object.keys(updates).length === 0 && Object.keys(address).length === 0) {
+    if (rejected.length) {
+      // Nothing could be stored: the answer is the most important reason (an address outside the area first), with every reason listed.
+      const first = rejected.find((r) => r.error === 'outside_delivery_area') || rejected[0];
+      return { ok: false, error: first.error, customerMessage: first.message, ...(first.note ? { internalNote: first.note + ' Nothing was stored.' } : { internalNote: 'Nothing was stored.' }), rejectedFields: rejected.map(({ field, error, message }) => ({ field, error, message })), missingDetails: missingDetails(state) };
+    }
     const missing = missingDetails(state);
     return fail('nothing_to_store', missing.length ? askText(missing) : 'What would you like to tell me?', { missingDetails: missing },
       'Nothing was stored. Only pass details the customer actually gave.');
@@ -394,6 +412,10 @@ function setCustomerDetails(args, ctx) {
     parts.push(`I've noted ${formatTime(toMinutes(state.pickupTime))} as your preferred pickup time. I can't promise the food will be ready at that time.`);
   }
   if (updates.pickupTimeDeclined) parts.push('No problem, no pickup time preference noted.');
+  for (const r of rejected) {
+    if (r.field === 'name' && missing.some((m) => m.field === 'name')) continue; // the question for the name follows below
+    parts.push(r.message);
+  }
   if (address.landmark && missing.some((m) => ['block', 'house', 'street'].includes(m.field))) {
     parts.push('A landmark helps, but I also need the full address.');
   }
@@ -404,15 +426,25 @@ function setCustomerDetails(args, ctx) {
     readBackNote = 'All required delivery details are stored. Call readBackAddress now, in this same turn, and show its result: it also asks the customer once about an optional apartment/unit or delivery instructions and asks them to confirm. Do not ask the optional question separately.';
   } else if (optional.length) parts.push(optional[0].ask);
 
-  return {
+  const rejectedNotes = rejected.map((r) => {
+    if (r.field === 'name') return 'name_not_stored: the customer has not given a name - ask for it; never invent one (an area, address, item or order type is not a name).';
+    if (r.error === 'outside_delivery_area') return `outside_delivery_area: the address was NOT stored. ${r.note || 'Tell the customer using the customerMessage, offer pickup, and do not switch the order type yourself.'}`;
+    return `${r.field}_not_stored (${r.error}): ${r.note || 'ask the customer again.'}`;
+  });
+  const result = {
     ok: true,
     stored: [...Object.keys(updates), ...Object.keys(address)],
+    ...(rejected.length ? { rejectedFields: rejected.map(({ field, error, message }) => ({ field, error, message })) } : {}),
     missingDetails: missing,
     optionalDetails: optional,
     ...(isDelivery ? { addressConfirmed: state.addressConfirmed } : {}),
     customerMessage: parts.join(' '),
-    ...(notes.length || readBackNote ? { internalNote: [...notes, ...(readBackNote ? [readBackNote] : [])].join(' ') } : {})
+    ...(notes.length || readBackNote || rejectedNotes.length ? { internalNote: [...notes, ...rejectedNotes, ...(readBackNote ? [readBackNote] : [])].join(' ') } : {})
   };
+  // An address outside the delivery area is always reported as a refusal (even when a valid name or phone in the same call was stored).
+  const outsideRefusal = rejected.find((r) => r.error === 'outside_delivery_area');
+  if (outsideRefusal) return { ...result, ok: false, error: 'outside_delivery_area', customerMessage: outsideRefusal.message };
+  return result;
 }
 
 // ---- address read-back and confirmation (delivery) ----------------------------------------------
