@@ -1,0 +1,25 @@
+const BASE = process.env.UI_BASE || 'http://localhost:3000';
+// Step AZ: the demo notice at the top of the chat, at 360 / 768 / 1280 px, never covering messages or the Confirm / WhatsApp buttons
+const { chromium } = require('playwright'); const assert = require('assert');
+(async () => {
+  const b = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium' });
+  for (const [w, h] of [[360, 640], [360, 800], [768, 800], [1280, 800]]) {
+    const p = await b.newPage({ viewport: { width: w, height: h } }); const errs = []; p.on('pageerror', e => errs.push(e.message)); p.on('console', m => { if (m.type() === 'error' && !/ERR_CERT|Failed to load resource/.test(m.text())) errs.push(m.text()); });
+    await p.route('**/api/chat', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ reply: 'Order review ...\nline 2\nline 3', sessionId: 'a'.repeat(32), sessionToken: 'T', reviewVersion: 'aaaaaaaaaaaaaaaa' }) }));
+    await p.route('**/api/order/confirm', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, channel: 'whatsapp', sent: false, whatsapp: { link: 'https://wa.me/923001234567?text=x', ref: 'KD-1', message: 'x' }, customerMessage: 'Your order is NOT sent yet.' }) }));
+    await p.goto(BASE + '/'); await p.click('#chat-toggle'); await p.waitForTimeout(350);
+    const geo = () => p.evaluate(() => { const r = (id) => document.getElementById(id).getBoundingClientRect(); const win = r('chat-window'), n = r('chat-notice'), m = r('chat-messages'), c = document.getElementById('chat-confirm'); const cr = c.hidden ? null : c.getBoundingClientRect(); const input = r('chat-input'); const nn = document.getElementById('chat-notice');
+      return { winTop: win.top, winBottom: win.bottom, winLeft: win.left, winRight: win.right, nTop: n.top, nBottom: n.bottom, nLeft: n.left, nRight: n.right, mTop: m.top, mBottom: m.bottom, mH: m.height, cTop: cr && cr.top, cBottom: cr && cr.bottom, inputTop: input.top, text: nn.textContent.replace(/\s+/g, ' ').trim(), urLang: nn.querySelector('.ur').getAttribute('lang'), urDir: nn.querySelector('.ur').getAttribute('dir'), vw: innerWidth, vh: innerHeight, sw: document.documentElement.scrollWidth, display: getComputedStyle(nn).display, nScroll: nn.scrollWidth <= nn.clientWidth + 1 }; });
+    let g = await geo(); assert.strictEqual(g.text, 'Demo only — please do not enter real personal information. یہ صرف ڈیمو ہے — اپنی اصلی ذاتی معلومات نہ لکھیں۔'); assert.strictEqual(g.urLang, 'ur'); assert.strictEqual(g.urDir, 'rtl');
+    assert(g.nTop >= g.winTop && g.nBottom <= g.mTop + 1 && g.nLeft >= g.winLeft - 1 && g.nRight <= g.winRight + 1, `${w}x${h}: the notice sits above the messages inside the window ${JSON.stringify(g)}`); assert(g.nScroll, 'no clipped text'); assert(g.mH >= 120, `${w}x${h}: messages area still ${g.mH}px high`); assert.strictEqual(g.sw <= g.vw + 1, true);
+    // with the Confirm button shown, then the WhatsApp panel
+    await p.fill('#chat-input', 'review'); await p.press('#chat-input', 'Enter'); await p.waitForFunction(() => !document.getElementById('chat-input').disabled); g = await geo();
+    assert(g.cTop !== null && g.cTop >= g.mBottom - 1 && g.cBottom <= g.inputTop + 1 && g.cBottom <= g.winBottom, `${w}x${h}: Confirm button below the messages, inside the window ${JSON.stringify(g)}`); assert(g.mH >= 80, `${w}x${h}: messages area with the Confirm button ${g.mH}px`);
+    await p.click('#chat-confirm-btn'); await p.waitForSelector('.wa-panel'); await p.waitForTimeout(150);
+    const wa = await p.evaluate(() => { const a = document.querySelector('.wa-open').getBoundingClientRect(); const n = document.getElementById('chat-notice').getBoundingClientRect(); const m = document.getElementById('chat-messages').getBoundingClientRect(); return { aTop: a.top, aBottom: a.bottom, aLeft: a.left, aRight: a.right, nBottom: n.bottom, mTop: m.top, mBottom: m.bottom, mLeft: m.left, mRight: m.right }; });
+    await p.evaluate(() => document.querySelector('.wa-open').scrollIntoView({ block: 'nearest' })); const wa2 = await p.evaluate(() => { const a = document.querySelector('.wa-open').getBoundingClientRect(); const n = document.getElementById('chat-notice').getBoundingClientRect(); const m = document.getElementById('chat-messages').getBoundingClientRect(); return { aTop: a.top, aBottom: a.bottom, nBottom: n.bottom, mTop: m.top, mBottom: m.bottom }; });
+    assert(wa2.aTop >= wa2.mTop - 1 && wa2.aBottom <= wa2.mBottom + 1 && wa2.aTop >= wa2.nBottom - 1, `${w}x${h}: the WhatsApp button is reachable inside the messages area, never under the notice ${JSON.stringify(wa2)}`);
+    assert.deepStrictEqual(errs, []); console.log(`${w}x${h}: demo notice (English + Urdu RTL) above the messages, inside the window, nothing clipped, messages area ${g.mH}px with the Confirm button, Confirm button and WhatsApp button not covered, no sideways scroll, no console errors: PASS`);
+  }
+  await b.close(); console.log('ALL STEP-AZ UI TESTS PASSED');
+})().catch(e => { console.error('TEST FAILED:', e.stack.split('\n').slice(0, 6).join('\n')); process.exit(1); });
