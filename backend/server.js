@@ -7,7 +7,7 @@ const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
 const { ordersEnabled, ORDERING_DISABLED_MESSAGE } = require('./config');
-const { guardReply } = require('./guard');
+const { guardReply, cleanUrdu } = require('./guard');
 const cooldown = require('./cooldown');
 const extraAi = require('./extra-ai');
 const { renderPrompt, paymentLine, paymentLineUrdu } = require('./facts');
@@ -299,7 +299,7 @@ app.post('/api/chat', async (req, res) => {
       if (!Array.isArray(calls) || calls.length === 0) {
         console.log(`${label(model)} answered: model=${shown(model)}`);
         // The reply is this attempt's final text only. A reply that claims the order is placed/confirmed is replaced unless the server really saved this session's order.
-        const reply = guardReply(response.text.trim(), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
+        const reply = guardReply(cleanUrdu(response.text.trim()), state, { customerMessage: message, ordersEnabled: ordersEnabled() });
         return res.json({ reply, ...extras() });
       }
 

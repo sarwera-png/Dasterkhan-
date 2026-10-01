@@ -71,4 +71,14 @@ function guardReply(reply, state, { customerMessage, ordersEnabled }) {
   return (ordersEnabled ? NOT_PLACED : DEMO)[lang];
 }
 
-module.exports = { guardReply, claimsOrderPlaced, detectLanguage, NOT_PLACED, DEMO };
+// Urdu-script replies only: Arabic diacritics (U+064B-U+065F, U+0670) are removed and Unicode hyphens (U+2010, U+2011) that touch
+// an Urdu letter become a normal space ("گُلشن‑اِیقبال" -> "گلشن ایقبال"). Digits, prices, order IDs, en dashes in ranges and
+// English text are never touched; a reply without Urdu script is returned as it is.
+const URDU_RANGE = '\\u0600-\\u06FF\\u0750-\\u077F\\uFB50-\\uFDFF\\uFE70-\\uFEFF';
+const UNICODE_HYPHEN_IN_URDU = new RegExp(`(?<=[${URDU_RANGE}])[\\u2010\\u2011]|[\\u2010\\u2011](?=[${URDU_RANGE}])`, 'g');
+function cleanUrdu(text) {
+  if (typeof text !== 'string' || !URDU_SCRIPT.test(text)) return text;
+  return text.replace(/[\u064B-\u065F\u0670]/g, '').replace(UNICODE_HYPHEN_IN_URDU, ' ');
+}
+
+module.exports = { cleanUrdu, guardReply, claimsOrderPlaced, detectLanguage, NOT_PLACED, DEMO };
