@@ -74,4 +74,23 @@ function getExistingSession(sessionId) {
   return { sessionId, state: entry.state };
 }
 
-module.exports = { getOrCreateSession, getExistingSession };
+// Puts a state that came out of a verified session token into this process's memory under its session id (replacing what is there),
+// so the rest of the code works on it as usual. Only known fields are kept, and each is checked for the right kind of value.
+function adoptSession(sessionId, tokenState) {
+  if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId) || !tokenState || typeof tokenState !== 'object') return null;
+  const base = newOrderState(); const state = newOrderState();
+  for (const key of Object.keys(base)) {
+    const value = tokenState[key];
+    if (value === undefined) continue;
+    const want = base[key];
+    const sameKind = Array.isArray(want) ? Array.isArray(value) : (want === null ? true : typeof value === typeof want && !Array.isArray(value));
+    if (sameKind) state[key] = value;
+  }
+  if (!Array.isArray(state.items) || !state.customer || typeof state.customer !== 'object') return null;
+  const now = Date.now();
+  if (!sessions.has(sessionId)) prune(now);
+  sessions.set(sessionId, { state, lastSeen: now });
+  return { sessionId, state };
+}
+
+module.exports = { getOrCreateSession, getExistingSession, adoptSession };

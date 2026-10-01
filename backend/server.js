@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { GoogleGenAI } = require('@google/genai');
-const { getOrCreateSession, getExistingSession } = require('./sessions');
+const { getOrCreateSession, getExistingSession, adoptSession } = require('./sessions');
+const sessionToken = require('./session-token');
 const { loadMenu, loadPromotions, loadRestaurant } = require('./data');
 const { buildReview } = require('./review');
 const { saveConfirmedOrder } = require('./orders');
@@ -179,8 +180,21 @@ function validReviewVersion(state) {
   }
 }
 
+const SESSION_NOT_CONFIGURED_REPLY = 'Sorry, the assistant is not set up correctly right now. Please contact the restaurant.';
+
+// The session for one request. A valid token (sealed by this app with SESSION_SECRET) is the source of truth for the order state; a token that is
+// present but invalid (tampered, expired, other secret) starts a fresh empty session. Without a token the in-memory session for the id is used, as before.
+function resolveSession(requestedSessionId, token) {
+  if (typeof token === 'string' && token !== '') {
+    const opened = sessionToken.open(token);
+    if (opened) { const adopted = adoptSession(opened.sessionId, opened.state); if (adopted) return adopted; }
+    return getOrCreateSession(undefined);
+  }
+  return getOrCreateSession(requestedSessionId);
+}
+
 app.post('/api/chat', async (req, res) => {
-  const { message, conversationHistory, sessionId: requestedSessionId } = req.body || {};
+  const { message, conversationHistory, sessionId: requestedSessionId, sessionToken: requestedToken } = req.body || {};
 
   if (message === undefined || message === null) {
     return res.status(400).json({
@@ -198,9 +212,12 @@ app.post('/api/chat', async (req, res) => {
   }
 
   // Each chat session has its own separate in-memory order state (not used by the model yet).
-  const { sessionId, state: sessionState } = getOrCreateSession(requestedSessionId);
-  // Sent with every reply: the session id and the review version the "Confirm order" button may use (null = no button).
-  const extras = () => ({ sessionId, reviewVersion: validReviewVersion(sessionState) });
+  // Fail closed where several instances may serve one customer (Vercel) and no session secret is configured.
+  if (!sessionToken.isConfigured()) return res.status(503).json({ error: 'session_not_configured', reply: SESSION_NOT_CONFIGURED_REPLY });
+  const { sessionId, state: sessionState } = resolveSession(requestedSessionId, requestedToken);
+  // Sent with every reply: the session id, the review version the "Confirm order" button may use (null = no button) and the
+  // sealed session token (built at the moment of the reply, so it always holds the final order state).
+  const extras = () => ({ sessionId, reviewVersion: validReviewVersion(sessionState), sessionToken: sessionToken.seal(sessionId, sessionState) });
 
   const chain = currentChain(); // fixed for this customer message
   if (chain.length === 0) {
@@ -355,26 +372,41 @@ app.post('/api/chat', async (req, res) => {
 // The customer presses the "Confirm order" button: the ONLY way an order is confirmed. Chat text never does it.
 // The server accepts it only if the reviewVersion is exactly the current one and that review was shown to the customer.
 app.post('/api/order/confirm', (req, res) => {
-  const { sessionId, reviewVersion } = req.body || {};
+  const { sessionId: bodySessionId, reviewVersion, sessionToken: requestedToken } = req.body || {};
+  let sessionId = bodySessionId; let tokenSession = null;
+  const withToken = (extra) => (tokenSession ? { ...extra, sessionToken: sessionToken.seal(tokenSession.sessionId, tokenSession.state) } : extra);
   const reject = (status, error, customerMessage) => {
     console.error(`Order confirm: rejected (${error.toUpperCase()})`);
-    return res.status(status).json({ ok: false, error, customerMessage });
+    return res.status(status).json(withToken({ ok: false, error, customerMessage }));
   };
   // Kill switch, checked first: while ordering is off nothing is confirmed and nothing is written.
   if (!ordersEnabled()) {
     return reject(503, 'ordering_disabled', ORDERING_DISABLED_MESSAGE);
   }
-  if (typeof sessionId !== 'string' || typeof reviewVersion !== 'string' || !/^[0-9a-f]{16}$/.test(reviewVersion)) {
+  if (!sessionToken.isConfigured()) {
+    return reject(503, 'session_not_configured', SESSION_NOT_CONFIGURED_REPLY);
+  }
+  if (typeof reviewVersion !== 'string' || !/^[0-9a-f]{16}$/.test(reviewVersion) || (typeof requestedToken !== 'string' && typeof sessionId !== 'string')) {
+    return reject(400, 'bad_request', 'Sorry, something went wrong. Please try again.');
+  }
+  if (typeof requestedToken === 'string' && requestedToken !== '') {
+    // The verified token is the source of truth for the order state; an invalid one never falls back to anything the client says.
+    const opened = sessionToken.open(requestedToken);
+    const adopted = opened ? adoptSession(opened.sessionId, opened.state) : null;
+    if (!adopted) return reject(404, 'session_not_found', "Sorry, I couldn't find your order. Please start again in the chat.");
+    sessionId = adopted.sessionId; tokenSession = adopted;
+  } else if (typeof sessionId !== 'string') {
     return reject(400, 'bad_request', 'Sorry, something went wrong. Please try again.');
   }
   const session = getExistingSession(sessionId);
+  if (session && !tokenSession) tokenSession = session;
   if (!session) return reject(404, 'session_not_found', "Sorry, I couldn't find your order. Please start again in the chat.");
   const state = session.state;
 
   if (state.status !== 'draft') {
     if (state.confirmedVersion === reviewVersion && state.orderId) {
       // Pressed twice: the same saved order is reported again, nothing new is written.
-      return res.json({ ok: true, confirmed: true, saved: true, orderId: state.orderId, customerMessage: state.receipt });
+      return res.json(withToken({ ok: true, confirmed: true, saved: true, orderId: state.orderId, customerMessage: state.receipt }));
     }
     return reject(409, 'order_locked', 'This order has already been confirmed and cannot be changed here.');
   }
@@ -399,7 +431,7 @@ app.post('/api/order/confirm', (req, res) => {
     saved = saveConfirmedOrder({ sessionId, reviewVersion, review: built.review });
   } catch (err) {
     console.error('Order confirm: save failed');
-    return res.status(500).json({ ok: false, error: 'save_failed', customerMessage: SAVE_FAILED_MESSAGE });
+    return res.status(500).json(withToken({ ok: false, error: 'save_failed', customerMessage: SAVE_FAILED_MESSAGE }));
   }
   state.confirmed = true;
   state.status = 'confirmed';
@@ -407,8 +439,10 @@ app.post('/api/order/confirm', (req, res) => {
   state.orderId = saved.order.id;
   state.receipt = receiptMessage(saved.order);
   console.log(`Order confirm: ${saved.created ? 'saved' : 'already saved'} ${saved.order.id}`);
-  return res.json({ ok: true, confirmed: true, saved: true, orderId: saved.order.id, customerMessage: state.receipt });
+  return res.json(withToken({ ok: true, confirmed: true, saved: true, orderId: saved.order.id, customerMessage: state.receipt }));
 });
+
+sessionToken.logStartup();
 
 app.use(staff.router); // /staff and /api/staff/*: fail closed without STAFF_PASSWORD
 

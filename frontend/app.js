@@ -17,6 +17,7 @@
 
   var history = []; // [{ role: 'user' | 'assistant', content: '...' }]
   var sessionId = null; // chat session id from the server, kept in memory only
+  var sessionToken = null; // sealed order state from the server (encrypted, we cannot read or change it); sent back with every request, kept in memory only
   var reviewVersion = null; // set by the server only while an order review is shown and still valid
   var busy = false;
   var confirming = false;
@@ -88,7 +89,7 @@
     return fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message, conversationHistory: history.slice(-MAX_HISTORY), sessionId: sessionId }),
+      body: JSON.stringify({ message: message, conversationHistory: history.slice(-MAX_HISTORY), sessionId: sessionId, sessionToken: sessionToken }),
       signal: controller.signal
     })
       .then(function (res) {
@@ -101,6 +102,9 @@
         var data = result.data;
         if (data && typeof data.sessionId === 'string') {
           sessionId = data.sessionId;
+        }
+        if (data && typeof data.sessionToken === 'string') {
+          sessionToken = data.sessionToken;
         }
         // Any reply without a valid review (or a failed request) hides the button: the old review no longer counts.
         reviewVersion = data && typeof data.reviewVersion === 'string' ? data.reviewVersion : null;
@@ -171,7 +175,7 @@
     fetch('/api/order/confirm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: sessionId, reviewVersion: versionToConfirm }),
+      body: JSON.stringify({ sessionId: sessionId, sessionToken: sessionToken, reviewVersion: versionToConfirm }),
       signal: controller.signal
     })
       .then(function (res) {
@@ -182,6 +186,9 @@
       })
       .then(function (result) {
         var data = result.data;
+        if (data && typeof data.sessionToken === 'string') {
+          sessionToken = data.sessionToken; // the saved order is part of the session state now
+        }
         var text = data && typeof data.customerMessage === 'string' && data.customerMessage.trim() !== '' ? data.customerMessage : GENERIC_ERROR;
         // The wording always comes from the server: it only talks about a saved order when it has a saved order number.
         addMessage(text, 'bot');
