@@ -14,6 +14,7 @@ const fs = require('fs'); const os = require('os'); const path = require('path')
 const ROOT = path.join(__dirname, '..');
 const args = Object.fromEntries(process.argv.slice(2).map((a) => { const m = /^--([^=]+)(?:=(.*))?$/.exec(a); return m ? [m[1], m[2] === undefined ? true : m[2]] : [a, true]; }));
 const STUB = !!args.stub;
+const STUB_VARIANT = args['stub-variant']; const STUB_EXTRAS_FIRST = STUB_VARIANT === 'extras-first' || STUB_VARIANT === 'no-readback'; // stub only: after the name the fake model asks the optional question first and reads back after "no"
 const PROVIDER = args.provider === undefined ? 'all' : String(args.provider);
 if (!['all', 'gemini', 'extra'].includes(PROVIDER)) { process.stdout.write('--provider must be all, gemini or extra\n'); process.exit(2); }
 const EXTRA_NAMES = ['EXTRA_AI_BASE_URL', 'EXTRA_AI_API_KEY', 'EXTRA_AI_MODELS'];
@@ -45,7 +46,8 @@ if (STUB) {
     'Block 3, house 12-B, Street 4': [{ name: 'setCustomerDetails', args: { block: '3', houseOrFlat: '12-B', street: 'Street 4' } }],
     '12345': [{ name: 'setCustomerDetails', args: { phone: '12345' } }],
     '03211234567': [{ name: 'setCustomerDetails', args: { phone: '03211234567' } }],
-    'Ali': [{ name: 'setCustomerDetails', args: { name: 'Ali', noExtraAddressDetails: true } }, { name: 'readBackAddress' }],
+    'Ali': STUB_EXTRAS_FIRST ? [{ name: 'setCustomerDetails', args: { name: 'Ali' } }] : [{ name: 'setCustomerDetails', args: { name: 'Ali', noExtraAddressDetails: true } }, { name: 'readBackAddress' }],
+    'no': STUB_VARIANT === 'no-readback' ? [{ name: 'setCustomerDetails', args: { noExtraAddressDetails: true } }] : [{ name: 'setCustomerDetails', args: { noExtraAddressDetails: true } }, { name: 'readBackAddress' }], // 'no-readback': a fake model that never reads the address back
     'ok': [{ name: 'confirmAddress' }],
     'haan, sahi hai': [{ name: 'confirmAddress' }],
     'show my order review': [{ name: 'getOrderReview' }],
@@ -191,7 +193,7 @@ const URDU_SCRIPT = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/;
 const auth = { Authorization: 'Basic ' + Buffer.from('staff:' + STAFF_PW).toString('base64') };
 const confirmCall = async (sessionId, reviewVersion) => { const r = await fetch(base + '/api/order/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, reviewVersion }) }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
 
-let s1Version = null;
+let s1Version = null; let s1Review = null;
 async function S1() {
   const s = new Scenario('S1 delivery'); const n0 = orders().length; // other scenarios may have saved orders: count relative to this start
   await s.step('1 add roll', 'I want 1 chicken roll with chutney', 'cart: 1x ROL01 (chutney with)', (st) => ({ pass: lineIs(st, 'ROL01', 1, { chutney: 'with' }), actual: cart(st) }));
@@ -201,12 +203,18 @@ async function S1() {
   await s.step('5 valid address', 'Block 3, house 12-B, Street 4', 'stored: block 3, house 12-B, street 4', (st) => { const a = st.customer.address || {}; return { pass: a.block === 3 && a.house === '12-B' && /4/.test(a.street || ''), actual: `block=${a.block} house=${a.house} street=${a.street}` }; });
   await s.step('6 bad phone', '12345', 'phone rejected (nothing stored)', (st) => ({ pass: !st.customer.phone, actual: 'phone=' + (st.customer.phone ? 'stored' : 'none') }));
   await s.step('7 good phone', '03211234567', 'phone stored (3211234567)', (st) => ({ pass: /3211234567$/.test(String(st.customer.phone || '').replace(/\D/g, '')), actual: 'phone=' + (st.customer.phone ? 'stored' : 'none') }));
-  await s.step('8 name + read-back', 'Ali', 'name Ali, address read back (not yet confirmed)', (st) => ({ pass: st.customer.name === 'Ali' && st.addressReadBack === true && st.addressConfirmed === false, actual: `name=${st.customer.name} readBack=${st.addressReadBack} confirmed=${st.addressConfirmed}` }));
+  // Step 8: the model may read the address back at once, OR first ask the one optional question; both are fine.
+  await s.step('8 name', 'Ali', 'name Ali stored; address read back, or ONE optional-details question asked first', (st) => ({ pass: st.customer.name === 'Ali' && st.addressConfirmed === false, actual: `name=${st.customer.name} readBack=${st.addressReadBack} confirmed=${st.addressConfirmed}` }));
+  if (!s.failed && !s.state.addressReadBack) await s.step('8b answer "no"', 'no', 'address read back now (optional details declined)', (st) => ({ pass: st.addressReadBack === true && st.addressConfirmed === false, actual: `readBack=${st.addressReadBack} confirmed=${st.addressConfirmed}` }));
+  if (!s.failed && !s.state.addressReadBack) rows.push({ sc: s.name, step: '8c read-back required', expected: 'address read back before any confirmation', actual: 'not read back', pass: false, diag: null });
   await s.step('9 "ok" is not a yes', 'ok', 'address NOT confirmed, nothing saved, reply makes no "order placed" claim', (st, reply) => ({ pass: st.addressConfirmed === false && st.status === 'draft' && orders().length === n0 && !claimsOrderPlaced(reply), actual: `confirmed=${st.addressConfirmed} status=${st.status} saved=${orders().length} claim=${claimsOrderPlaced(reply)}` }));
   await s.step('10 clear yes', 'haan, sahi hai', 'address confirmed, still no order saved', (st) => ({ pass: st.addressConfirmed === true && st.status === 'draft' && orders().length === n0, actual: `confirmed=${st.addressConfirmed} saved=${orders().length}` }));
-  await s.step('11 review', 'show my order review', 'review total 370 (220 + 150), Confirm offered (reviewVersion)', (st, reply, json) => { const b = reviewNow(st); const v = json && json.reviewVersion; s1Version = v; return { pass: b.ok && b.review.totals.total === 370 && b.review.totals.deliveryFee === 150 && /^[0-9a-f]{16}$/.test(v || '') && v === b.review.reviewVersion, actual: `total=${b.ok && b.review.totals.total} fee=${b.ok && b.review.totals.deliveryFee} version=${v ? 'offered' : 'none'}` }; });
+  await s.step('11 review', 'show my order review', 'review total 370 (220 + 150), Confirm offered (reviewVersion)', (st, reply, json) => { const b = reviewNow(st); const v = json && json.reviewVersion; s1Version = v; s1Review = b.ok ? JSON.parse(JSON.stringify(b.review)) : null; return { pass: b.ok && b.review.totals.total === 370 && b.review.totals.deliveryFee === 150 && /^[0-9a-f]{16}$/.test(v || '') && v === b.review.reviewVersion, actual: `total=${b.ok && b.review.totals.total} fee=${b.ok && b.review.totals.deliveryFee} version=${v ? 'offered' : 'none'}` }; });
   if (!s.failed) { const r = await confirmCall(s.sid, s1Version); const all = orders(); const o = all[all.length - 1]; const pass = r.status === 200 && r.json.saved === true && /^KD-\d+$/.test(r.json.orderId || '') && all.length === n0 + 1 && o.id === r.json.orderId && o.review.totals.total === 370 && o.review.orderType === 'delivery';
-    s.record('12 press Confirm', 'POST /api/order/confirm -> 200, saved KD id, record total 370', `status=${r.status} id=${r.json.orderId} records=${all.length} total=${o && o.review.totals.total}`, pass); }
+    s.record('12 press Confirm', 'POST /api/order/confirm -> 200, saved KD id, record total 370', `status=${r.status} id=${r.json.orderId} records=${all.length} total=${o && o.review.totals.total}`, pass);
+    // The saved record must equal the review the customer was shown, field by field.
+    if (pass && s1Review) { const keys = ['reviewVersion', 'orderType', 'items', 'customer', 'delivery', 'pickup', 'promotion', 'totals', 'currency', 'payment']; const diff = keys.filter((k) => JSON.stringify(o.review[k]) !== JSON.stringify(s1Review[k]));
+      s.record('13 record = review', 'saved record equals the review (items, customer, address, totals, payment, version) and starts as NEW', diff.length ? 'differs in: ' + diff.join(', ') : `identical (${keys.length} fields), status=${o.status}`, diff.length === 0 && o.status === 'NEW' && s1Review.items.length === 1 && o.review.items[0].lineTotal === 220); } }
 }
 async function S2() {
   const s = new Scenario('S2 promo');
