@@ -6,6 +6,7 @@ const { fail, normalize } = require('./fail');
 const checkout = require('./checkout');
 const { ordersEnabled } = require('./config');
 const { buildReview } = require('./review');
+const optionWords = require('./option-synonyms');
 
 const MAX_QUANTITY = 100; // technical sanity limit per cart line, not a business rule
 
@@ -16,7 +17,7 @@ const OPTIONS_SCHEMA = {
     type: 'OBJECT',
     properties: {
       name: { type: 'STRING', description: 'Option name, e.g. spice' },
-      choice: { type: 'STRING', description: 'The chosen value, e.g. mild' }
+      choice: { type: 'STRING', description: 'The chosen value, e.g. mild. The customer may say it in Urdu or Roman Urdu (for example کم مرچ / kam mirch = mild, chutney ke sath = with); pass what they said or the listed choice.' }
     },
     required: ['name', 'choice']
   }
@@ -174,14 +175,16 @@ function validateOptions(item, optionList) {
   }
   const chosen = {};
   for (const entry of optionList || []) {
-    const spec = entry && required.find((r) => normalize(r.name) === normalize(entry.name));
+    const spec = entry && required.find((r) => normalize(r.name) === normalize(entry.name) || normalize(r.name) === optionWords.canonicalName(entry.name));
     if (!spec) {
       const names = required.map((r) => r.name);
       return { error: fail('invalid_option', names.length
         ? `Sorry, ${item.name} doesn't have that option. Its options are: ${names.join(', ')}.`
         : `Sorry, ${item.name} has no options to choose.`, null, 'Do not add options that are not listed. Nothing was changed.') };
     }
-    const choice = spec.choices.find((c) => normalize(c) === normalize(entry.choice));
+    // exact choice first, then the known English / Urdu / Roman Urdu phrases for that option (whole phrase only, never a guess)
+    const choice = spec.choices.find((c) => normalize(c) === normalize(entry.choice))
+      || spec.choices.find((c) => normalize(c) === optionWords.canonicalChoice(spec.name, entry.choice));
     if (!choice) {
       return { error: fail('invalid_option_choice', `Sorry, that isn't a choice for ${spec.name}. Please choose ${spec.choices.join(' or ')}.`,
         { missingOptions: [{ name: spec.name, choices: spec.choices }] }, 'Ask the customer to pick one of the listed choices. Nothing was changed.') };
@@ -258,7 +261,10 @@ function findCartLine(cart, args) {
   if (candidates.length > 1 && Array.isArray(args.currentOptions)) {
     const wanted = {};
     for (const entry of args.currentOptions) {
-      if (entry && typeof entry.name === 'string' && typeof entry.choice === 'string') wanted[normalize(entry.name)] = normalize(entry.choice);
+      if (entry && typeof entry.name === 'string' && typeof entry.choice === 'string') {
+        const name = optionWords.canonicalName(entry.name) || normalize(entry.name);
+        wanted[name] = optionWords.canonicalChoice(name, entry.choice) || normalize(entry.choice);
+      }
     }
     candidates = candidates.filter((line) => Object.entries(wanted).every(([name, choice]) =>
       Object.entries(line.options).some(([n, c]) => normalize(n) === name && normalize(c) === choice)));
