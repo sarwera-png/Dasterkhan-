@@ -12,6 +12,7 @@ What is already in the repo: `api/index.js` (thin entry that exports the same Ex
    - `GEMINI_API_KEY` (required for the chat)
    - `GEMINI_FALLBACK_MODELS` (optional)
    - `GEMINI_COOLDOWN_SECONDS` (optional, default 60)
+   - `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` (optional extra provider, see section 5b; all three or none)
    - Do **not** set `ORDERS_ENABLED` (ordering stays off: the public demo takes no orders).
    - Do **not** set `STAFF_PASSWORD` (the staff dashboard stays locked with 403).
 4. Deploy, open the URL, check: website loads, chat answers, no "Confirm order" button, `/staff` shows 403.
@@ -45,6 +46,7 @@ The app is one long-running Express server (`backend/server.js` calls `app.liste
 | `STAFF_PASSWORD` | the staff dashboard (without it `/staff` is locked with HTTP 403) |
 | `ORDERS_ENABLED` | leave **unset** on the public site (section 2) |
 | `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS` | optional; defaults are in `.env.example` |
+| `EXTRA_AI_BASE_URL`, `EXTRA_AI_API_KEY`, `EXTRA_AI_MODELS` | optional extra AI provider (OpenAI-compatible, e.g. Groq), used only after all Gemini models fail; all three or it stays off |
 | `GEMINI_COOLDOWN_SECONDS` | optional; seconds to skip a model after 429/503 (default 60, max 300, 0 = off) |
 | `PORT` | not used on Vercel; used when running as a normal server |
 
@@ -62,6 +64,20 @@ Set them in the hosting provider's environment settings, never in a committed fi
 - The free Gemini tier is rate limited. Under load the provider answers `429` (quota) or `503` (overloaded). The app tries the fallback models in order, and when all fail it gives the customer a safe "please contact staff" message; nothing is invented.
 - A classroom or a public link can use up the free quota quickly, and a leaked public URL lets strangers spend it. Consider a paid quota, a per-visitor rate limit on `/api/chat`, and quota alerts.
 - Model names and their availability change over time: re-check them on the real key before any launch.
+
+## 5b. Optional extra AI provider (Groq / OpenRouter)
+
+Purpose: when the free Gemini quota is used up (429), the app can try one more provider as a **last resort**, after the whole Gemini chain. It speaks the OpenAI-compatible Chat Completions API, so Groq and OpenRouter work by changing only environment values.
+
+- **Get a free Groq key:** console.groq.com, sign in, **API Keys**, create a key. Keep it only in your own `.env` (laptop) or in the host's environment settings (Vercel), never in the repo or in chat.
+- **The three names** (all required, otherwise the provider is off and nothing changes):
+  - `EXTRA_AI_BASE_URL`, example value (not a secret): `https://api.groq.com/openai/v1` (https only)
+  - `EXTRA_AI_API_KEY`, your key
+  - `EXTRA_AI_MODELS`, comma-separated model IDs tried in order. Copy the exact IDs from the Groq console **Models** page and pin them; do not guess, IDs change over time.
+- **Free tier limits:** per-minute request and token limits apply, so this is a fallback, not the main provider. A 429 from it starts the same cooldown as for Gemini.
+- **Privacy:** while this provider is used, the system prompt, menu data and the customer's messages are sent to that company. Use only the fictional demo data; never type real names, phone numbers or addresses.
+- The code keeps every rule (prices, totals, promotions, confirmation, saving orders, the fake-confirmation guard) whichever provider answered. Malformed tool calls from the extra provider fail that attempt and the next model is tried.
+- On Vercel, add the three names in the project's Environment Variables like the others (values only there).
 
 ## 6. Recommended order of work for guide Prompts 36-37
 
