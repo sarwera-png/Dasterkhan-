@@ -137,10 +137,13 @@ const rows = []; const short = (v, n = 64) => { const s = typeof v === 'string' 
 let messagesSent = 0; const answers = []; // which provider/model answered each message (names only)
 
 // One scenario = one chat session. Returns false to stop the scenario after a FAIL.
+// Failure category of one model attempt (from the server's log keyword).
+const reasonOf = (status) => ({ 429: '429', 503: '503', timeout: 'timeout', bad_tool_args: 'malformed_tool_args', unknown_tool: 'unknown_tool', empty_reply: 'empty_reply' })[status] || (/^\d+$/.test(status) ? `http_${status}` : 'other');
+const diagLine = (d) => d ? `attempts failed: ${d.attemptsFailed.length ? d.attemptsFailed.map((a) => `${a.model}=${a.reason}`).join(', ') : 'none'} | tools: ${d.tools.length ? d.tools.map((t) => `${t.name} ${t.result}`).join(', ') : 'none'} | reply: "${d.reply}"` : null;
 class Scenario {
   constructor(name) { this.name = name; this.sid = null; this.history = []; this.failed = false; this.last = null; this.json = null; }
   get state() { return this.sid ? sessions.getOrCreateSession(this.sid).state : null; }
-  record(step, expected, actual, pass) { rows.push({ sc: this.name, step, expected: short(expected), actual: short(actual), pass }); if (!pass) this.failed = true; return pass; }
+  record(step, expected, actual, pass, diag) { rows.push({ sc: this.name, step, expected: short(expected), actual: short(actual), pass, diag: diag || null }); if (!pass) this.failed = true; return pass; }
   // Sends one customer message like the website does (session id + last 10 turns). 429/503 -> wait and retry (max 3), restoring the order state first so a half-done tool round is not applied twice.
   async say(text) {
     if (messagesSent > 0 && DELAY_S > 0) await sleep(DELAY_S); messagesSent += 1;
@@ -151,27 +154,31 @@ class Scenario {
       const r = await fetch(base + '/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, conversationHistory: this.history.slice(-10), sessionId: this.sid }) });
       const json = await r.json().catch(() => null);
       if (json && typeof json.sessionId === 'string') this.sid = json.sessionId;
-      if (r.ok && json && typeof json.reply === 'string') { this.noteAnswer(text, mark); this.json = json; this.last = json.reply; this.history.push({ role: 'user', content: text }, { role: 'assistant', content: json.reply }); return json; }
+      if (r.ok && json && typeof json.reply === 'string') { this.noteAnswer(text, mark, json.reply); this.json = json; this.last = json.reply; this.history.push({ role: 'user', content: text }, { role: 'assistant', content: json.reply }); return json; }
       if ((r.status === 503 || r.status === 429 || r.status === 502) && attempt < 3) {
         if (this.sid) { const st = this.state; for (const k of Object.keys(st)) delete st[k]; Object.assign(st, JSON.parse(JSON.stringify(before))); }
         await sleep(RETRY_WAIT_S); continue;
       }
-      this.noteAnswer(text, mark); this.json = json; this.last = json && json.reply || ''; return json;
+      this.noteAnswer(text, mark, json && json.reply); this.json = json; this.last = json && json.reply || ''; return json;
     }
     return this.json;
   }
   // Reads the server's log lines for this message: who answered (provider + model name) and how many attempts failed first. Names and counts only.
-  noteAnswer(text, mark) {
+  noteAnswer(text, mark, reply) {
     const lines = serverLog.slice(mark); const done = lines.filter((l) => /^(Gemini|Extra AI) answered: model=/.test(l)).pop();
-    const failed = lines.filter((l) => /^(Gemini|Extra AI) attempt \d+: model=\S+ status=/.test(l)).length; const skipped = lines.filter((l) => / skip: model=/.test(l)).length;
+    const attemptsFailed = lines.map((l) => /^(?:Gemini|Extra AI) attempt \d+: model=(\S+) status=(\S+)$/.exec(l)).filter(Boolean).map((m) => ({ model: m[1], reason: reasonOf(m[2]) }));
+    const skipped = lines.filter((l) => / skip: model=/.test(l)).length;
+    const tools = lines.map((l) => /^Tool result: (\w+) -> (ok|rejected \((\w+)\))/.exec(l)).filter(Boolean).map((m) => ({ name: m[1], result: m[3] ? `rejected(${m[3]})` : 'ok' }));
     const by = done ? done.replace(/ answered: model=/, ' ') : 'none (no model answered)';
-    answers.push({ sc: this.name, msg: short(text, 34), by, failed, skipped });
+    // Diagnostics for this message: attempt failure reasons, tool names with the code's verdict, and a short reply snippet (fictional demo data only).
+    this.lastDiag = { attemptsFailed, tools, reply: String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    answers.push({ sc: this.name, msg: short(text, 34), by, failed: attemptsFailed.length, skipped, diag: this.lastDiag });
   }
   // say + check against server data. check(state, reply, json) -> { pass, actual }
   async step(step, text, expected, check) {
     if (this.failed) return false;
     let res; try { await this.say(text); res = check(this.state, this.last || '', this.json); } catch (e) { res = { pass: false, actual: 'error: ' + e.message }; }
-    return this.record(`${step} "${short(text, 38)}"`, expected, res.actual, !!res.pass);
+    return this.record(`${step} "${short(text, 38)}"`, expected, res.actual, !!res.pass, this.lastDiag);
   }
   check(step, expected, fn) { if (this.failed) return false; let res; try { res = fn(); } catch (e) { res = { pass: false, actual: 'error: ' + e.message }; } return this.record(step, expected, res.actual, !!res.pass); }
 }
@@ -248,10 +255,12 @@ function report() {
   const w = [14, 36, 52, 52, 4]; const pad = (t, n) => { t = scrub(t); return t.length > n ? t.slice(0, n - 1) + '…' : t.padEnd(n); };
   const lines = [`Live check (${STUB ? 'STUB model' : 'REAL model'}) - provider=${PROVIDER} - ${new Date().toISOString()} - delay ${DELAY_S}s`, `Extra models: ${(require(path.join(ROOT, 'backend', 'extra-ai')).config() || { models: [] }).models.join(', ') || '(none)'}`, '', ['Scenario', 'Step', 'Expected', 'Actual', ''].map((h, i) => pad(h, w[i])).join(' | ')];
   lines.push(w.map((n) => '-'.repeat(n)).join('-+-'));
-  for (const r of rows) lines.push([r.sc, r.step, r.expected, r.actual, r.pass ? 'PASS' : 'FAIL'].map((t, i) => pad(t, w[i])).join(' | '));
+  for (const r of rows) { lines.push([r.sc, r.step, r.expected, r.actual, r.pass ? 'PASS' : 'FAIL'].map((t, i) => pad(t, w[i])).join(' | ')); if (!r.pass && r.diag) lines.push('      -> ' + scrub(diagLine(r.diag))); }
   const pass = rows.filter((r) => r.pass).length; const fail = rows.length - pass; const scFail = [...new Set(rows.filter((r) => !r.pass).map((r) => r.sc))];
   lines.push('', 'Who answered each message (provider and model name only; "failed" = attempts that failed first, "skipped" = models skipped by the cooldown):');
   for (const a of answers) lines.push(`  ${scrub(a.sc).padEnd(14)} | ${scrub(a.msg).padEnd(34)} | ${scrub(a.by)}${a.failed ? ` (failed first: ${a.failed})` : ''}${a.skipped ? ` (skipped: ${a.skipped})` : ''}`);
+  lines.push('', 'Details per message (failed attempt reasons, tool calls with the code\'s verdict, reply start):');
+  for (const a of answers) lines.push(`  ${scrub(a.sc)} | ${scrub(a.msg)}\n      ${scrub(diagLine(a.diag))}`);
   const tally = {}; for (const a of answers) tally[a.by] = (tally[a.by] || 0) + 1; lines.push('  Totals: ' + (Object.entries(tally).map(([k, v]) => `${k} x${v}`).join(', ') || 'none'));
   lines.push('', `TOTAL: ${rows.length} checks, ${pass} PASS, ${fail} FAIL${scFail.length ? ' (failed scenarios: ' + scFail.join(', ') + ')' : ''}`, fail ? 'LIVE CHECK FAILED' : 'ALL LIVE-CHECK SCENARIOS PASSED');
   return { text: lines.join('\n'), fail };
