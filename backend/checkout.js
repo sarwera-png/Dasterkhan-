@@ -1,7 +1,7 @@
 // Customer details for the order (pickup and delivery). Everything is validated here in code;
 // the model only passes on what the customer said and never fills in or guesses a missing detail.
 const { fail } = require('./fail');
-const { loadRestaurant } = require('./data');
+const { loadRestaurant, loadMenu } = require('./data');
 const { isClearYes } = require('./confirm');
 const { blocksRange } = require('./facts');
 
@@ -57,12 +57,35 @@ function hoursText(restaurant) {
 
 // ---- validation ---------------------------------------------------------------------------------
 
+// Words that are never a customer's name: the area, the city, address words, menu items, order types and placeholders.
+const NON_NAME_WORDS = ['block', 'blk', 'بلاک', 'house', 'flat', 'plot', 'street', 'road', 'st', 'lane', 'gali', 'گلی', 'area', 'address', 'phone', 'mobile', 'number', 'name',
+  'pickup', 'pick', 'up', 'پک', 'اپ', 'delivery', 'deliver', 'ڈیلیوری', 'customer', 'guest', 'unknown', 'anonymous', 'none', 'na', 'n', 'a', 'نامعلوم', 'گاہک', 'مہمان', 'order', 'آرڈر'];
+const foldName = (text) => String(text).normalize('NFKC').toLowerCase().replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+const compactName = (text) => foldName(text).replace(/ /g, '');
+// True when the text equals, or is made up only of, area / city / address / menu / placeholder words (so it cannot be a real name).
+function isNonName(raw, restaurant, menu) {
+  const folded = foldName(raw); if (!folded) return true;
+  const words = folded.split(' ');
+  if (words.every((w) => /^\p{N}+$/u.test(w))) return true; // digits only
+  const whole = new Set(); const vocab = new Set(NON_NAME_WORDS.map(foldName));
+  const addPhrase = (t) => { const f = foldName(t); if (!f) return; whole.add(f.replace(/ /g, '')); whole.add(f.replace(/ e /g, ' ').replace(/ /g, '')); f.split(' ').forEach((w) => { if (w.length > 1) vocab.add(w); }); };
+  [restaurant.area, restaurant.city, ...(restaurant.areaAliases || [])].forEach((t) => { const f = foldName(t); whole.add(f.replace(/ /g, '')); whole.add(f.replace(/ e /g, ' ').replace(/ /g, '')); if (!/ /.test(f)) vocab.add(f); }); // area words only as whole phrases ("iqbal" alone can be a name)
+  whole.add('karachi'); whole.add('کراچی'); vocab.add('karachi'); vocab.add('کراچی');
+  for (const item of menu.items) { addPhrase(item.name); addPhrase(item.id); }
+  if (whole.has(words.join('')) || whole.has(folded.replace(/ e /g, ' ').replace(/ /g, ''))) return true;
+  // An area word followed only by the rest of its name in either script ("گلشن اقبال", "Gulshan Iqbal") or other non-name words.
+  const aliasWords = new Set((restaurant.areaAliases || []).map(foldName).filter((w) => w && !/ /.test(w)));
+  const tail = new Set([...foldName(restaurant.area).split(' ').slice(1), 'اقبال', 'ای']);
+  if (aliasWords.has(words[0]) && words.slice(1).every((w) => tail.has(w) || vocab.has(w) || /^\p{N}+$/u.test(w))) return true;
+  return words.every((w) => vocab.has(w) || /^\p{N}+$/u.test(w));
+}
+
 function validateName(raw) {
   const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
   const letters = (text.match(/\p{L}/gu) || []).length;
-  if (text.length < 2 || text.length > 60 || letters < 2 || !NAME_PATTERN.test(text)) {
+  if (text.length < 2 || text.length > 60 || letters < 2 || !NAME_PATTERN.test(text) || isNonName(text, loadRestaurant(), loadMenu())) {
     return { error: fail('invalid_name', "Sorry, I didn't catch that name. What name should I put on the order?", null,
-      'The name must be 2 to 60 letters (spaces, dots, apostrophes and hyphens allowed). Nothing was stored. Do not make up a name.') };
+      'The name must be the customer\'s own name (2 to 60 letters; spaces, dots, apostrophes and hyphens allowed), said by the customer. An area, address, item, order type or placeholder is not a name. Nothing was stored. Do not make up a name: ask for it.') };
   }
   return { value: text };
 }
