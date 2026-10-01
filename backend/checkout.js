@@ -374,8 +374,12 @@ function setCustomerDetails(args, ctx) {
   if (address.landmark && missing.some((m) => ['block', 'house', 'street'].includes(m.field))) {
     parts.push('A landmark helps, but I also need the full address.');
   }
+  let readBackNote = null;
   if (missing.length) parts.push(askText(missing));
-  else if (optional.length) parts.push(optional[0].ask);
+  else if (isDelivery) {
+    // Everything required is stored: the optional apartment/instructions question is NOT asked on its own. readBackAddress asks it together with the confirmation.
+    readBackNote = 'All required delivery details are stored. Call readBackAddress now, in this same turn, and show its result: it also asks the customer once about an optional apartment/unit or delivery instructions and asks them to confirm. Do not ask the optional question separately.';
+  } else if (optional.length) parts.push(optional[0].ask);
 
   return {
     ok: true,
@@ -384,7 +388,7 @@ function setCustomerDetails(args, ctx) {
     optionalDetails: optional,
     ...(isDelivery ? { addressConfirmed: state.addressConfirmed } : {}),
     customerMessage: parts.join(' '),
-    ...(notes.length ? { internalNote: notes.join(' ') } : {})
+    ...(notes.length || readBackNote ? { internalNote: [...notes, ...(readBackNote ? [readBackNote] : [])].join(' ') } : {})
   };
 }
 
@@ -414,16 +418,20 @@ function readBackAddress(args, ctx) {
     `Address: ${addressText(state, restaurant)}`,
     ...(a.apartment ? [`Apartment or unit: ${a.apartment}`] : []),
     ...(a.instructions ? [`Delivery instructions: ${a.instructions}`] : []),
-    ...(a.landmark ? [`Landmark: ${a.landmark}`] : []),
-    'Is this correct? Please say yes, or tell me what to change.'
+    ...(a.landmark ? [`Landmark: ${a.landmark}`] : [])
   ];
+  // The optional question is asked once, in the same reply as the read-back and the confirmation question (never as a separate turn before it).
+  const askExtras = !state.addressExtrasDeclined && !state.addressExtrasAsked && (!a.apartment || !a.instructions);
+  if (askExtras) lines.push('Optional: is there an apartment or unit number, or any delivery instructions? (You can say no.)');
+  lines.push('Is this correct? Please say yes, or tell me what to change.');
+  state.addressExtrasAsked = true;
   state.addressReadBack = true;
   state.addressConfirmed = false;
   return {
     ok: true,
     awaitingConfirmation: true,
     customerMessage: lines.join('\n'),
-    internalNote: 'Show these details to the customer exactly as written (translate only the labels if needed, never the values). The address is NOT confirmed yet. Do not call confirmAddress until the customer clearly says yes. If they want a change, use setCustomerDetails and then read the address back again.'
+    internalNote: 'Show these details to the customer exactly as written, including the optional question and the confirmation question, all in this one reply (translate only the labels if needed, never the values). The address is NOT confirmed yet. Do not call confirmAddress until the customer clearly says yes. If they want a change, or give an apartment/unit or delivery instructions, use setCustomerDetails and then read the address back again.'
   };
 }
 

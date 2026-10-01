@@ -17,6 +17,7 @@ function newOrderState() {
     pickupTime: null, // 'HH:MM' (24-hour), pickup orders only, optional
     pickupTimeDeclined: false, // the customer said they have no pickup time preference
     addressExtrasDeclined: false, // delivery: the customer said no apartment/unit or instructions
+    addressExtrasAsked: false, // delivery: the optional apartment/instructions question was shown together with a read-back
     addressReadBack: false, // delivery: the code has read the captured details back to the customer
     addressConfirmed: false, // delivery: the customer clearly said yes to the read-back (reset by ANY change)
     reviewShownVersion: null, // reviewVersion of the last order review shown to the customer
