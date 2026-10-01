@@ -101,9 +101,30 @@ function validatePhone(raw) {
 }
 
 function cleanLine(raw, { min = 1, max, pattern } = {}) {
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 0) raw = String(raw); // models often send "12" as the number 12
   const text = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
   if (text.length < min || text.length > max || /[\u0000-\u001f\u007f]/.test(text) || (pattern && !pattern.test(text))) return null;
   return text;
+}
+
+// A whole address in one text, accepted ONLY when every part is clearly labelled: "Block 3, house 12-B, Street 4". The parts are then
+// validated exactly like separately given fields. Anything that cannot be read with certainty returns null (nothing is guessed).
+function parseAddressString(raw, restaurant) {
+  if (typeof raw !== 'string' || raw.length > 200) return null;
+  const out = {};
+  const put = (key, value) => { if (out[key] !== undefined) return false; out[key] = value; return true; };
+  const segments = raw.split(/[,;\n،]+/).map((x) => x.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (segments.length === 0) return null;
+  for (const seg of segments) {
+    let m;
+    if ((m = /^(?:block|blk|بلاک)\s*(?:no\.?|number|#|-)?\s*(\S+)$/i.exec(seg))) { if (!put('block', m[1])) return null; }
+    else if ((m = /^(?:house|flat)\s*(?:no\.?|number|#|-)?\s*(\S.*)$/i.exec(seg))) { if (!put('houseOrFlat', m[1])) return null; }
+    else if (/^(?:street|st\.?|road|rd\.?|lane|gali|گلی)\s*(?:no\.?|number|#)?\s*\S+/i.test(seg) || /\S\s+(?:street|road|rd\.?|lane|avenue|ave\.?)$/i.test(seg)) { if (!put('street', seg)) return null; }
+    else if (isInArea(seg, restaurant)) { if (!put('area', seg)) return null; }
+    else if (/^(?:karachi|pakistan)$/i.test(seg)) { /* city or country name: nothing to store */ }
+    else return null;
+  }
+  return out;
 }
 
 const HOUSE_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}\p{M}\s\-\/#.,]*$/u;
@@ -260,11 +281,18 @@ function setCustomerDetails(args, ctx) {
   }
 
   // ---- delivery-only details (ignored for pickup, never asked for)
-  const deliveryFields = ['phone', 'area', 'block', 'houseOrFlat', 'street', 'apartment', 'landmark', 'instructions'];
+  const deliveryFields = ['phone', 'area', 'address', 'block', 'houseOrFlat', 'street', 'apartment', 'landmark', 'instructions'];
   if (!isDelivery && (deliveryFields.some((f) => has(args[f])) || args.noExtraAddressDetails === true)) {
     notes.push('Address and phone details are not needed for pickup and were ignored. Do not ask for them.');
   }
   if (isDelivery) {
+    if (has(args.address)) {
+      // The model sent the whole address as one text instead of separate parts: read it only if every part is labelled, else ask.
+      const parsed = parseAddressString(args.address, restaurant);
+      if (!parsed) return fail('invalid_address', "Sorry, I couldn't read that address clearly. Please tell me the block number, the house or flat number and the street.", null, 'Nothing was stored. Pass the parts separately (block, houseOrFlat, street) exactly as the customer said them; do not guess.');
+      args = { ...args };
+      for (const key of ['area', 'block', 'houseOrFlat', 'street']) if (!has(args[key]) && parsed[key] !== undefined) args[key] = parsed[key]; // separately given fields win
+    }
     if (has(args.area) && !isInArea(args.area, restaurant)) return outsideAreaError(restaurant);
     if (has(args.block)) {
       const block = parseBlock(args.block);
@@ -276,7 +304,8 @@ function setCustomerDetails(args, ctx) {
       address.block = block;
     }
     if (has(args.houseOrFlat)) {
-      const house = cleanLine(args.houseOrFlat, { max: 40, pattern: HOUSE_PATTERN });
+      const houseRaw = cleanLine(args.houseOrFlat, { max: 40, pattern: HOUSE_PATTERN });
+      const house = houseRaw && houseRaw.replace(/^(?:house|flat)\s*(?:no\.?|number|#|-)?\s*(?=\S)/i, '') || houseRaw; // "house 12-B" -> "12-B" (the label already says house or flat)
       if (!house) return fail('invalid_address', "Sorry, I didn't catch the house or flat number. What is it?", null, 'Nothing was stored. Do not guess it.');
       address.house = house;
     }
