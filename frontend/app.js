@@ -79,6 +79,23 @@
     link.appendChild(en);
     link.appendChild(document.createTextNode(' '));
     link.appendChild(ur);
+    var ref = null;
+    if (typeof wa.ref === 'string' && /^KD-[0-9A-F]{5}$/.test(wa.ref)) {
+      // The same reference as in the message text, so the customer and the restaurant can quote it.
+      ref = document.createElement('div');
+      ref.className = 'wa-ref';
+      var refEn = document.createElement('span');
+      refEn.className = 'wa-ref-en';
+      refEn.textContent = 'Ref: ' + wa.ref;
+      var refUr = document.createElement('span');
+      refUr.className = 'wa-ref-ur ur';
+      refUr.setAttribute('lang', 'ur');
+      refUr.setAttribute('dir', 'rtl');
+      refUr.textContent = 'حوالہ نمبر: ' + wa.ref;
+      ref.appendChild(refEn);
+      ref.appendChild(document.createTextNode(' '));
+      ref.appendChild(refUr);
+    }
     var label = document.createElement('div');
     label.className = 'wa-label';
     label.textContent = 'Order text (you can copy it) / آرڈر کا متن (کاپی کر سکتے ہیں)';
@@ -87,6 +104,7 @@
     text.setAttribute('dir', 'auto');
     text.textContent = wa.message;
     panel.appendChild(link);
+    if (ref) panel.appendChild(ref);
     panel.appendChild(label);
     panel.appendChild(text);
     messages.appendChild(panel);
