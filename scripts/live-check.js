@@ -141,7 +141,7 @@ let messagesSent = 0; const answers = []; // which provider/model answered each 
 // One scenario = one chat session. Returns false to stop the scenario after a FAIL.
 // Failure category of one model attempt (from the server's log keyword).
 const reasonOf = (status) => ({ 429: '429', 503: '503', timeout: 'timeout', bad_tool_args: 'malformed_tool_args', unknown_tool: 'unknown_tool', empty_reply: 'empty_reply' })[status] || (/^\d+$/.test(status) ? `http_${status}` : 'other');
-const diagLine = (d) => d ? `attempts failed: ${d.attemptsFailed.length ? d.attemptsFailed.map((a) => `${a.model}=${a.reason}`).join(', ') : 'none'} | tools: ${d.tools.length ? d.tools.map((t) => `${t.name} ${t.result}`).join(', ') : 'none'} | reply: "${d.reply}"` : null;
+const diagLine = (d) => d ? `attempts failed: ${d.attemptsFailed.length ? d.attemptsFailed.map((a) => `${a.model}=${a.reason}`).join(', ') : 'none'} | tools: ${d.tools.length ? d.tools.map((t) => `${t.name} ${t.result}`).join(', ') : 'none'} | rollbacks: ${d.rollbacks} | reply: "${d.reply}"` : null;
 class Scenario {
   constructor(name) { this.name = name; this.sid = null; this.history = []; this.failed = false; this.last = null; this.json = null; }
   get state() { return this.sid ? sessions.getOrCreateSession(this.sid).state : null; }
@@ -173,7 +173,8 @@ class Scenario {
     const tools = lines.map((l) => /^Tool result: (\w+) -> (ok|rejected \((\w+)\))/.exec(l)).filter(Boolean).map((m) => ({ name: m[1], result: m[3] ? `rejected(${m[3]})` : 'ok' }));
     const by = done ? done.replace(/ answered: model=/, ' ') : 'none (no model answered)';
     // Diagnostics for this message: attempt failure reasons, tool names with the code's verdict, and a short reply snippet (fictional demo data only).
-    this.lastDiag = { attemptsFailed, tools, reply: String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    const rollbacks = lines.filter((l) => /^Rollback: /.test(l)).length; // failed attempts whose side effects the server undid
+    this.lastDiag = { attemptsFailed, tools, rollbacks, reply: String(reply || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
     answers.push({ sc: this.name, msg: short(text, 34), by, failed: attemptsFailed.length, skipped, diag: this.lastDiag });
   }
   // say + check against server data. check(state, reply, json) -> { pass, actual }
@@ -270,7 +271,7 @@ function report() {
   const pass = rows.filter((r) => r.pass).length; const fail = rows.length - pass; const scFail = [...new Set(rows.filter((r) => !r.pass).map((r) => r.sc))];
   lines.push('', 'Who answered each message (provider and model name only; "failed" = attempts that failed first, "skipped" = models skipped by the cooldown):');
   for (const a of answers) lines.push(`  ${scrub(a.sc).padEnd(14)} | ${scrub(a.msg).padEnd(34)} | ${scrub(a.by)}${a.failed ? ` (failed first: ${a.failed})` : ''}${a.skipped ? ` (skipped: ${a.skipped})` : ''}`);
-  lines.push('', 'Details per message (failed attempt reasons, tool calls with the code\'s verdict, reply start):');
+  lines.push('', 'Details per message (failed attempt reasons, tool calls with the code\'s verdict, rollbacks = failed attempts whose side effects the server undid, reply start):');
   for (const a of answers) lines.push(`  ${scrub(a.sc)} | ${scrub(a.msg)}\n      ${scrub(diagLine(a.diag))}`);
   const tally = {}; for (const a of answers) tally[a.by] = (tally[a.by] || 0) + 1; lines.push('  Totals: ' + (Object.entries(tally).map(([k, v]) => `${k} x${v}`).join(', ') || 'none'));
   lines.push('', `TOTAL: ${rows.length} checks, ${pass} PASS, ${fail} FAIL${scFail.length ? ' (failed scenarios: ' + scFail.join(', ') + ')' : ''}`, fail ? 'LIVE CHECK FAILED' : 'ALL LIVE-CHECK SCENARIOS PASSED');
